@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import mimetypes
 from dataclasses import dataclass, field
@@ -9,6 +10,14 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from .config import AstrBotSettings, get_settings
+
+
+def _looks_like_md5(value: str) -> bool:
+    """Heuristic: 32 hex chars -> treat as already MD5-hashed."""
+    if len(value) != 32:
+        return False
+    lowered = value.lower()
+    return all("0" <= c <= "9" or "a" <= c <= "f" for c in lowered)
 
 
 @dataclass
@@ -38,6 +47,11 @@ class AstrBotClient:
 
         Uses ASTRBOT_USERNAME / ASTRBOT_PASSWORD if provided.
         If not provided, requests will be sent without Authorization header.
+
+        AstrBot's dashboard backend compares the incoming password with the
+        stored MD5 hash (see routes/auth.py), while the frontend sends the
+        MD5(username) string. To match that behavior, we hash the provided
+        password with MD5 unless it already looks like a 32-char hex string.
         """
         if self._token is not None:
             return self._token
@@ -49,11 +63,15 @@ class AstrBotClient:
             # No credentials configured; caller must rely on public/unauthenticated APIs.
             return None
 
+        pwd = password.strip()
+        if not _looks_like_md5(pwd):
+            pwd = hashlib.md5(pwd.encode("utf-8")).hexdigest()
+
         url = f"{self.base_url}/api/auth/login"
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             resp = await client.post(
                 url,
-                json={"username": username, "password": password},
+                json={"username": username, "password": pwd},
             )
             # If login fails, raise for clarity
             resp.raise_for_status()
@@ -291,4 +309,3 @@ class AstrBotClient:
         """
         response = await self._request("POST", "/api/stat/restart-core")
         return response.json()
-
