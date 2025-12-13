@@ -224,7 +224,8 @@ AstrBot 已经内置了 MCP 客户端管理逻辑（参见 `routes/tools.py`）�
 
 注意：`send_platform_message_direct` 是“直接给平台群/好友发消息”（不是 WebChat）。
 
-- 媒体段如果传入本地 `file_path`（例如 `D:\...`），MCP 会先把该文件上传到 AstrBot（`/api/chat/post_file`），再把它转换成 AstrBot 可下载的 http(s) URL 发送给平台适配器。
+- 媒体段如果传入本地 `file_path`（例如 `D:\...`），MCP 默认会优先把“本地绝对路径”直接转发给平台适配器（对 Napcat/QQ 这类更兼容本地路径的实现更稳）。
+- 如需强制“先上传到 AstrBot，再发送 URL”，可设置环境变量 `ASTRBOTMCP_DIRECT_MEDIA_MODE=upload`；默认 `auto` 会先尝试 `local`，失败再回退到 `upload`。
 - 如果你直接传入 http(s) URL（通过 `url` 或 `file_path`），则会原样转发。
 
 ### 4. `restart_astrbot`

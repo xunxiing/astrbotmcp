@@ -73,6 +73,38 @@ def _httpx_error_detail(exc: httpx.HTTPStatusError) -> Any:
         return exc.response.text
 
 
+def _direct_media_mode(client: AstrBotClient) -> str:
+    """
+    How send_platform_message_direct handles local media.
+
+    Values:
+      - auto: try local path first, then fallback to upload+URL
+      - local: always send local absolute paths
+      - upload: always upload to AstrBot first and send an http(s) URL
+    """
+    raw = (
+        os.getenv("ASTRBOTMCP_DIRECT_MEDIA_MODE")
+        or os.getenv("ASTRBOT_MCP_DIRECT_MEDIA_MODE")
+        or getattr(client.settings, "direct_media_mode", None)
+        or ""
+    )
+    mode = raw.strip().lower()
+    if not mode:
+        return "auto"
+    if mode in ("auto", "local", "upload"):
+        return mode
+    raise ValueError(
+        "Invalid ASTRBOTMCP_DIRECT_MEDIA_MODE; expected 'auto', 'local', or 'upload'."
+    )
+
+
+def _as_file_uri(path: str) -> str | None:
+    try:
+        return Path(path).resolve().as_uri()
+    except Exception:
+        return None
+
+
 async def get_astrbot_logs(
     wait_seconds: int = 0,
     max_events: int = 200,
@@ -197,6 +229,13 @@ async def send_platform_message_direct(
         - If `file_path`/`url` is an http(s) URL, it will be forwarded as-is.
     """
     client = AstrBotClient.from_env()
+    onebot_like = platform_id.strip().lower() in {
+        "napcat",
+        "onebot",
+        "cqhttp",
+        "gocqhttp",
+        "llonebot",
+    }
 
     if message_chain is None:
         message_chain = []
@@ -211,179 +250,220 @@ async def send_platform_message_direct(
         for src in videos or []:
             message_chain.append({"type": "video", "file_path": src})
 
-    normalized_chain: List[Dict[str, Any]] = []
-    uploaded_attachments: List[Dict[str, Any]] = []
+    async def build_chain(mode: str) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        normalized_chain: List[Dict[str, Any]] = []
+        uploaded_attachments: List[Dict[str, Any]] = []
 
-    for part in message_chain:
-        p_type = part.get("type")
-        if p_type in ("image", "file", "record", "video"):
-            file_path = part.get("file_path")
-            url = part.get("url")
-            file_name = part.get("file_name")
-            mime_type = part.get("mime_type")
-            src = url or file_path
-            if not src:
-                continue
+        for part in message_chain or []:
+            p_type = part.get("type")
+            if p_type in ("image", "file", "record", "video"):
+                file_path = part.get("file_path")
+                url = part.get("url")
+                file_name = part.get("file_name")
+                mime_type = part.get("mime_type")
+                src = url or file_path
+                if not src:
+                    continue
 
-            normalized = dict(part)
-            if not isinstance(src, str):
-                return {
-                    "status": "error",
-                    "message": f"Invalid media source (expected str): {src!r}",
-                    "platform_id": platform_id,
-                    "session_id": str(target_id),
-                    "message_type": message_type,
-                    "part": dict(part),
-                }
+                normalized = dict(part)
+                if not isinstance(src, str):
+                    raise ValueError(f"Invalid media source (expected str): {src!r}")
 
-            if src.startswith(("http://", "https://")):
-                normalized["file_path"] = src
-                normalized.pop("url", None)
-            else:
+                if src.startswith(("http://", "https://")):
+                    normalized["file_path"] = src
+                    if onebot_like:
+                        normalized.setdefault("file", src)
+                    normalized.pop("url", None)
+                    normalized_chain.append(normalized)
+                    continue
+
                 try:
                     local_path = _resolve_local_file_path(client, src)
                 except ValueError as e:
-                    return {
-                        "status": "error",
-                        "message": str(e),
-                        "platform_id": platform_id,
-                        "session_id": str(target_id),
-                        "message_type": message_type,
-                        "part": dict(part),
-                        "hint": "Set ASTRBOTMCP_FILE_ROOT to control how relative paths are resolved.",
-                    }
-                except FileNotFoundError:
-                    return {
-                        "status": "error",
-                        "message": f"Local file_path does not exist: {src!r}",
-                        "platform_id": platform_id,
-                        "session_id": str(target_id),
-                        "message_type": message_type,
-                        "part": dict(part),
-                        "hint": "If you passed a relative path, set ASTRBOTMCP_FILE_ROOT (or run the server in the correct working directory).",
-                    }
+                    raise ValueError(str(e)) from e
+                except FileNotFoundError as e:
+                    raise FileNotFoundError(f"Local file_path does not exist: {src!r}") from e
+
+                if mode == "local":
+                    normalized["file_path"] = local_path
+                    normalized.pop("url", None)
+                    if onebot_like:
+                        uri = _as_file_uri(local_path)
+                        normalized.setdefault("file", uri or local_path)
+                    normalized_chain.append(normalized)
+                    continue
+
+                if mode != "upload":
+                    raise ValueError(f"Unknown direct media mode: {mode!r}")
 
                 if not file_name:
                     file_name = os.path.basename(local_path) or None
 
-                try:
-                    attach_resp = await client.post_attachment_file(
-                        local_path,
-                        file_name=file_name,
-                        mime_type=mime_type,
-                    )
-                except httpx.HTTPStatusError as e:
-                    return {
-                        "status": "error",
-                        "message": f"AstrBot API error: {e.response.status_code}",
-                        "platform_id": platform_id,
-                        "session_id": str(target_id),
-                        "message_type": message_type,
-                        "base_url": client.base_url,
-                        "detail": _httpx_error_detail(e),
-                    }
-                except httpx.RequestError as e:
-                    return {
-                        "status": "error",
-                        "message": f"AstrBot request error: {e!s}",
-                        "platform_id": platform_id,
-                        "session_id": str(target_id),
-                        "message_type": message_type,
-                        "base_url": client.base_url,
-                        "hint": _astrbot_connect_hint(client),
-                    }
+                attach_resp = await client.post_attachment_file(
+                    local_path,
+                    file_name=file_name,
+                    mime_type=mime_type,
+                )
 
                 if attach_resp.get("status") != "ok":
-                    return {
-                        "status": attach_resp.get("status"),
-                        "message": attach_resp.get("message"),
-                        "platform_id": platform_id,
-                        "session_id": str(target_id),
-                        "message_type": message_type,
-                        "raw": attach_resp,
-                    }
+                    raise RuntimeError(attach_resp.get("message") or "Attachment upload failed")
 
                 attach_data = attach_resp.get("data") or {}
                 attachment_id = attach_data.get("attachment_id")
                 if not attachment_id:
-                    return {
-                        "status": "error",
-                        "message": "Attachment upload succeeded but attachment_id is missing",
-                        "platform_id": platform_id,
-                        "session_id": str(target_id),
-                        "message_type": message_type,
-                        "raw": attach_resp,
-                    }
+                    raise RuntimeError(
+                        "Attachment upload succeeded but attachment_id is missing"
+                    )
 
-                normalized["file_path"] = _attachment_download_url(client, str(attachment_id))
+                download_url = _attachment_download_url(client, str(attachment_id))
+                normalized["file_path"] = download_url
+                if onebot_like:
+                    normalized.setdefault("file", download_url)
                 normalized.pop("url", None)
                 normalized.pop("file_name", None)
                 normalized.pop("mime_type", None)
                 uploaded_attachments.append(attach_data)
+                normalized_chain.append(normalized)
+            else:
+                normalized_chain.append(dict(part))
 
-            normalized_chain.append(normalized)
-        else:
-            normalized_chain.append(dict(part))
+        return normalized_chain, uploaded_attachments
 
-    if not normalized_chain:
-        return {
-            "status": "error",
-            "message": "message_chain did not produce any valid message parts",
-            "platform_id": platform_id,
-            "session_id": str(target_id),
-            "message_type": message_type,
-        }
-
+    # Prefer local paths (more compatible with Napcat / Windows), but keep an upload fallback.
     try:
-        direct_resp = await client.send_platform_message_direct(
-            platform_id=platform_id,
-            message_type=message_type,
-            session_id=str(target_id),
-            message_chain=normalized_chain,
-        )
-    except httpx.HTTPStatusError as e:
-        detail: Any
+        mode = _direct_media_mode(client)
+    except ValueError as e:
+        return {
+            "status": "error",
+            "message": str(e),
+            "platform_id": platform_id,
+            "session_id": str(target_id),
+            "message_type": message_type,
+        }
+    modes_to_try = ["local", "upload"] if mode == "auto" else [mode]
+    last_error: Dict[str, Any] | None = None
+
+    for attempt_mode in modes_to_try:
         try:
-            detail = e.response.json()
-        except Exception:
-            detail = e.response.text
+            normalized_chain, uploaded_attachments = await build_chain(attempt_mode)
+        except FileNotFoundError as e:
+            return {
+                "status": "error",
+                "message": str(e),
+                "platform_id": platform_id,
+                "session_id": str(target_id),
+                "message_type": message_type,
+                "hint": "If you passed a relative path, set ASTRBOTMCP_FILE_ROOT (or run the server in the correct working directory).",
+            }
+        except ValueError as e:
+            return {
+                "status": "error",
+                "message": str(e),
+                "platform_id": platform_id,
+                "session_id": str(target_id),
+                "message_type": message_type,
+                "hint": "Set ASTRBOTMCP_FILE_ROOT to control how relative paths are resolved.",
+            }
+        except httpx.HTTPStatusError as e:
+            return {
+                "status": "error",
+                "message": f"AstrBot API error: {e.response.status_code}",
+                "platform_id": platform_id,
+                "session_id": str(target_id),
+                "message_type": message_type,
+                "base_url": client.base_url,
+                "detail": _httpx_error_detail(e),
+            }
+        except httpx.RequestError as e:
+            return {
+                "status": "error",
+                "message": f"AstrBot request error: {e!s}",
+                "platform_id": platform_id,
+                "session_id": str(target_id),
+                "message_type": message_type,
+                "base_url": client.base_url,
+                "hint": _astrbot_connect_hint(client),
+            }
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": str(e),
+                "platform_id": platform_id,
+                "session_id": str(target_id),
+                "message_type": message_type,
+                "attempt_mode": attempt_mode,
+            }
 
-        return {
-            "status": "error",
-            "message": f"AstrBot API error: {e.response.status_code}",
-            "platform_id": platform_id,
-            "session_id": str(target_id),
-            "message_type": message_type,
-            "detail": detail,
-            "hint": "Ensure AstrBot includes /api/platform/send_message and you are authenticated.",
-        }
-    except httpx.RequestError as e:
-        return {
-            "status": "error",
-            "message": f"AstrBot request error: {e!s}",
-            "platform_id": platform_id,
-            "session_id": str(target_id),
-            "message_type": message_type,
-        }
+        if not normalized_chain:
+            return {
+                "status": "error",
+                "message": "message_chain did not produce any valid message parts",
+                "platform_id": platform_id,
+                "session_id": str(target_id),
+                "message_type": message_type,
+            }
 
-    status = direct_resp.get("status")
-    if status != "ok":
-        return {
+        try:
+            direct_resp = await client.send_platform_message_direct(
+                platform_id=platform_id,
+                message_type=message_type,
+                session_id=str(target_id),
+                message_chain=normalized_chain,
+            )
+        except httpx.HTTPStatusError as e:
+            detail: Any
+            try:
+                detail = e.response.json()
+            except Exception:
+                detail = e.response.text
+            return {
+                "status": "error",
+                "message": f"AstrBot API error: {e.response.status_code}",
+                "platform_id": platform_id,
+                "session_id": str(target_id),
+                "message_type": message_type,
+                "attempt_mode": attempt_mode,
+                "detail": detail,
+                "hint": "Ensure AstrBot includes /api/platform/send_message and you are authenticated.",
+            }
+        except httpx.RequestError as e:
+            return {
+                "status": "error",
+                "message": f"AstrBot request error: {e!s}",
+                "platform_id": platform_id,
+                "session_id": str(target_id),
+                "message_type": message_type,
+                "attempt_mode": attempt_mode,
+            }
+
+        status = direct_resp.get("status")
+        if status == "ok":
+            data = direct_resp.get("data") or {}
+            return {
+                "status": "ok",
+                "platform_id": data.get("platform_id", platform_id),
+                "session_id": data.get("session_id", str(target_id)),
+                "message_type": data.get("message_type", message_type),
+                "attempt_mode": attempt_mode,
+                "uploaded_attachments": uploaded_attachments,
+            }
+
+        last_error = {
             "status": status,
             "platform_id": platform_id,
             "session_id": str(target_id),
             "message_type": message_type,
+            "attempt_mode": attempt_mode,
             "message": direct_resp.get("message"),
             "raw": direct_resp,
         }
 
-    data = direct_resp.get("data") or {}
-    return {
-        "status": "ok",
-        "platform_id": data.get("platform_id", platform_id),
-        "session_id": data.get("session_id", str(target_id)),
-        "message_type": data.get("message_type", message_type),
-        "uploaded_attachments": uploaded_attachments,
+    return last_error or {
+        "status": "error",
+        "message": "Failed to send message",
+        "platform_id": platform_id,
+        "session_id": str(target_id),
+        "message_type": message_type,
     }
 
 

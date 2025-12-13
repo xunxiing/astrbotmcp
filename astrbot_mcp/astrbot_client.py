@@ -4,6 +4,10 @@ import asyncio
 import hashlib
 import json
 import mimetypes
+import os
+import re
+import tempfile
+from urllib.parse import unquote, urlparse
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -18,6 +22,32 @@ def _looks_like_md5(value: str) -> bool:
         return False
     lowered = value.lower()
     return all("0" <= c <= "9" or "a" <= c <= "f" for c in lowered)
+
+
+def _filename_from_content_disposition(value: str) -> str | None:
+    """
+    Extract filename from Content-Disposition header.
+
+    Supports:
+      - filename="..."
+      - filename*=UTF-8''...
+    """
+    if not value:
+        return None
+
+    # RFC 5987: filename*=UTF-8''%E4%B8%AD%E6%96%87.txt
+    match = re.search(r"filename\\*=([^']*)''([^;]+)", value, flags=re.IGNORECASE)
+    if match:
+        filename = unquote(match.group(2))
+        filename = os.path.basename(filename.strip().strip('"'))
+        return filename or None
+
+    match = re.search(r'filename=\"?([^\";]+)\"?', value, flags=re.IGNORECASE)
+    if match:
+        filename = os.path.basename(match.group(1).strip().strip('"'))
+        return filename or None
+
+    return None
 
 
 @dataclass
@@ -282,18 +312,30 @@ class AstrBotClient:
         )
         return response.json()
 
-    async def post_attachment_file(self, file_path: str) -> Dict[str, Any]:
+    async def post_attachment_file(
+        self,
+        file_path: str,
+        *,
+        file_name: str | None = None,
+        mime_type: str | None = None,
+    ) -> Dict[str, Any]:
         """
         Upload a file via /api/chat/post_file and return the response JSON.
 
         AstrBot will create an attachment record and return attachment_id.
         """
-        guessed_type, _ = mimetypes.guess_type(file_path)
-        content_type = guessed_type or "application/octet-stream"
+        content_type = mime_type
+        if content_type:
+            content_type = content_type.split(";", 1)[0].strip() or None
+        if not content_type:
+            guessed_type, _ = mimetypes.guess_type(file_path)
+            content_type = guessed_type or "application/octet-stream"
+
+        send_name = file_name or os.path.basename(file_path)
 
         with open(file_path, "rb") as f:
             files = {
-                "file": (file_path.split("/")[-1].split("\\")[-1], f, content_type),
+                "file": (send_name, f, content_type),
             }
             url = f"{self.base_url}/api/chat/post_file"
             headers = await self._get_auth_headers()
@@ -301,6 +343,58 @@ class AstrBotClient:
                 response = await client.post(url, files=files, headers=headers)
                 response.raise_for_status()
                 return response.json()
+
+    async def post_attachment_url(
+        self,
+        url: str,
+        *,
+        file_name: str | None = None,
+        mime_type: str | None = None,
+    ) -> Dict[str, Any]:
+        """
+        Download a remote URL and upload it via /api/chat/post_file.
+
+        This is useful when the caller can only provide an http(s) URL
+        (e.g. LLM-generated image links) but AstrBot requires an uploaded attachment.
+        """
+        temp_path: str | None = None
+        try:
+            async with httpx.AsyncClient(
+                timeout=self.timeout,
+                follow_redirects=True,
+            ) as http_client:
+                async with http_client.stream("GET", url) as response:
+                    response.raise_for_status()
+
+                    if not mime_type:
+                        content_type = response.headers.get("content-type") or ""
+                        content_type = content_type.split(";", 1)[0].strip()
+                        mime_type = content_type or None
+
+                    if not file_name:
+                        cd = response.headers.get("content-disposition") or ""
+                        file_name = _filename_from_content_disposition(cd)
+
+                    if not file_name:
+                        parsed = urlparse(str(response.url))
+                        file_name = os.path.basename(parsed.path) or "download"
+
+                    with tempfile.NamedTemporaryFile(delete=False) as tmp:
+                        temp_path = tmp.name
+                        async for chunk in response.aiter_bytes():
+                            tmp.write(chunk)
+
+            return await self.post_attachment_file(
+                temp_path,
+                file_name=file_name,
+                mime_type=mime_type,
+            )
+        finally:
+            if temp_path:
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
 
     async def send_chat_message_sse(
         self,
