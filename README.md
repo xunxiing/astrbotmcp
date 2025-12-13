@@ -21,18 +21,17 @@ uv run --project . astrbot-mcp
 {
   "mcpServers": {
     "astrbot-mcp": {
-      "command": "uv",
+      "command": "uvx",
       "args": [
-        "run",
-        "--project",
-        "/path/to/astrbotmcp",
-        "astrbot-mcp"
+        "--from",
+        "astrbotmcp",
+        "astrbot-mcp.exe"
       ],
       "env": {
         "ASTRBOT_BASE_URL": "http://127.0.0.1:6185",
         "ASTRBOT_TIMEOUT": "30",
-        "ASTRBOT_DEFAULT_PROVIDER": "your-provider-id",
-        "ASTRBOT_DEFAULT_MODEL": "your-model-id"
+        "ASTRBOT_USERNAME": "your_username",
+        "ASTRBOT_PASSWORD": "your_password"
       }
     }
   }
@@ -44,3 +43,6 @@ uv run --project . astrbot-mcp
 - 使用 `uv` 而不是系统 `python`，避免跑到全局 Python 3.13 环境。
 - 使用 `--project /path/to/astrbotmcp` 指定项目路径。
 - 使用 `astrbot-mcp`（console script），它会调用 `astrbot_mcp.server:main`。
+- 请您务必配置pypl代理：setx UV_INDEX_URL https://pypi.tuna.tsinghua.edu.cn/simple
+  
+
