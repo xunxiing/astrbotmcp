@@ -453,3 +453,10 @@ class AstrBotClient:
         """
         response = await self._request("POST", "/api/stat/restart-core")
         return response.json()
+
+    async def get_version(self) -> Dict[str, Any]:
+        """
+        Get AstrBot version via /api/stat/version.
+        """
+        response = await self._request("GET", "/api/stat/version")
+        return response.json()
