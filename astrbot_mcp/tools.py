@@ -252,7 +252,10 @@ async def send_platform_message(
                     "message": "Attachment upload succeeded but attachment_id is missing",
                     "raw": attach_resp,
                 }
-            message_parts.append({"attachment_id": attachment_id})
+            # /api/chat/send has a pre-check based on `type`, so include media type
+            # alongside attachment_id (otherwise it may treat the message as empty).
+            attachment_type = attach_data.get("type") or p_type
+            message_parts.append({"type": attachment_type, "attachment_id": attachment_id})
             uploaded_attachments.append(attach_data)
         else:
             # 忽略未知类型

@@ -160,6 +160,25 @@ class AstrBotClient:
                 json=json_body,
             ) as response:
                 response.raise_for_status()
+                content_type = (response.headers.get("content-type") or "").lower()
+                if "text/event-stream" not in content_type:
+                    raw = await response.aread()
+                    raw_text = raw.decode("utf-8", errors="replace").strip()
+                    try:
+                        payload = json.loads(raw_text) if raw_text else None
+                    except json.JSONDecodeError:
+                        payload = None
+
+                    if isinstance(payload, dict):
+                        status = payload.get("status")
+                        message = payload.get("message") or payload.get("error") or raw_text
+                        raise RuntimeError(
+                            f"Expected SSE but got JSON ({status or 'unknown'}): {message}"
+                        )
+
+                    raise RuntimeError(
+                        f"Expected SSE but got {content_type or 'unknown content-type'}: {raw_text}"
+                    )
 
                 async def consume() -> None:
                     async for line in response.aiter_lines():
