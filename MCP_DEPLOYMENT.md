@@ -235,20 +235,33 @@ AstrBot 已经内置了 MCP 客户端管理逻辑（参见 `routes/tools.py`）�
 
 ### 5. `get_platform_session_messages`
 
+- 用途：获取真实平台群/好友的会话历史（直接从 AstrBot `/api/log-history` 日志缓存中做“最佳努力”提取，并对重复日志进行合并压缩）。
 - 参数：
-  - `session_id`：平台会话 ID（可以从 `send_platform_message` 的返回值中获得）。
-- 返回值：
+  - `target_id`：群号/用户 ID（例如 `"257525294"`）。
+  - `platform_id`（可选）：平台 ID（例如 `"napcat"`）；不传则自动选择第一个启用的平台。
+  - `message_type`（可选）：`"GroupMessage"` 或 `"FriendMessage"`，默认 `"GroupMessage"`。
+  - `wait_seconds`（可选）：> 0 时会额外读取 `/api/live-log`，把时间窗口内的新消息作为 `delta` 事件返回（默认 0）。
+  - `max_messages`（可选）：最多返回多少条（默认 50，最大 5000）。
+  - `poll_interval_seconds`（可选）：保留字段（当前实现不使用）。
+- 返回值（示例字段）：
 
 ```json
 {
   "status": "ok",
-  "session_id": "xxxx",
-  "history": [...],
-  "is_running": false
+  "platform_id": "napcat",
+  "message_type": "GroupMessage",
+  "target_id": "257525294",
+  "umo": "napcat:GroupMessage:257525294",
+  "cid": null,
+  "history_source": "astrbot_log",
+  "log_fallback_used": true,
+  "log_level": "DEBUG",
+  "sse_events": [...],
+  "history": [...]
 }
 ```
 
-`history` 的具体结构由 AstrBot 的 `platform_message_history_manager` 决定，通常包含每条消息的类型、内容、发送者等信息。
+当 `log_level` 不变时，会把日志级别提升到顶层字段，`history` 内每条消息不再重复包含 `level`。`history` 条目主要字段：`kind/time/sender/content/text/raw`（`message_id/user_id/group_id` 仅在存在时出现）。
 
 ---
 
