@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
+from urllib.parse import urlparse
+
 import httpx
 from typing import Any, Dict, List, Literal, Optional, TypedDict
 
@@ -13,16 +17,60 @@ class MessagePart(TypedDict, total=False):
     Types:
       - plain:  {\"type\": \"plain\", \"text\": \"...\"}
       - reply:  {\"type\": \"reply\", \"message_id\": \"...\"}
-      - image:  {\"type\": \"image\", \"file_path\": \"...\"}
-      - file:   {\"type\": \"file\", \"file_path\": \"...\"}
-      - record: {\"type\": \"record\", \"file_path\": \"...\"}
-      - video:  {\"type\": \"video\", \"file_path\": \"...\"}
+      - image:  {\"type\": \"image\", \"file_path\": \"...\"} or {\"type\": \"image\", \"url\": \"https://...\"}
+      - file:   {\"type\": \"file\", \"file_path\": \"...\"}  or {\"type\": \"file\", \"url\": \"https://...\"}
+      - record: {\"type\": \"record\", \"file_path\": \"...\"} or {\"type\": \"record\", \"url\": \"https://...\"}
+      - video:  {\"type\": \"video\", \"file_path\": \"...\"} or {\"type\": \"video\", \"url\": \"https://...\"}
     """
 
     type: Literal["plain", "reply", "image", "file", "record", "video"]
     text: str
     message_id: str
     file_path: str
+    url: str
+    file_name: str
+    mime_type: str
+
+
+def _resolve_local_file_path(client: AstrBotClient, file_path: str) -> str:
+    expanded = os.path.expanduser(file_path)
+    candidate = Path(expanded)
+
+    base: Path | None = None
+    if not candidate.is_absolute():
+        root = client.settings.file_root
+        base = Path(root) if root else Path.cwd()
+        candidate = base / candidate
+
+    try:
+        resolved = candidate.resolve(strict=True)
+    except FileNotFoundError as e:
+        raise FileNotFoundError(str(candidate)) from e
+
+    if base is not None:
+        base_resolved = base.resolve()
+        if not resolved.is_relative_to(base_resolved):
+            raise ValueError(f"file_path escapes base directory: {file_path!r}")
+
+    return str(resolved)
+
+
+def _attachment_download_url(client: AstrBotClient, attachment_id: str) -> str:
+    return f"{client.base_url}/api/chat/get_attachment?attachment_id={attachment_id}"
+
+
+def _astrbot_connect_hint(client: AstrBotClient) -> str:
+    return (
+        f"Cannot connect to AstrBot at {client.base_url!r}. "
+        "Check ASTRBOT_BASE_URL, ensure AstrBot is running, and that the host/port is reachable."
+    )
+
+
+def _httpx_error_detail(exc: httpx.HTTPStatusError) -> Any:
+    try:
+        return exc.response.json()
+    except Exception:
+        return exc.response.text
 
 
 async def get_astrbot_logs(
@@ -58,7 +106,24 @@ async def get_astrbot_logs(
                 "message": str(e),
             }
 
-    history = await client.get_log_history()
+    try:
+        history = await client.get_log_history()
+    except httpx.HTTPStatusError as e:
+        return {
+            "mode": "history",
+            "status": "error",
+            "message": f"AstrBot API error: {e.response.status_code}",
+            "base_url": client.base_url,
+            "detail": _httpx_error_detail(e),
+        }
+    except httpx.RequestError as e:
+        return {
+            "mode": "history",
+            "status": "error",
+            "message": f"AstrBot request error: {e!s}",
+            "base_url": client.base_url,
+            "hint": _astrbot_connect_hint(client),
+        }
     status = history.get("status")
     if status != "ok":
         return {
@@ -79,7 +144,22 @@ async def get_message_platforms() -> Dict[str, Any]:
     获取 AstrBot 中配置的消息平台列表，对应 /api/config/platform/list。
     """
     client = AstrBotClient.from_env()
-    result = await client.get_platform_list()
+    try:
+        result = await client.get_platform_list()
+    except httpx.HTTPStatusError as e:
+        return {
+            "status": "error",
+            "message": f"AstrBot API error: {e.response.status_code}",
+            "base_url": client.base_url,
+            "detail": _httpx_error_detail(e),
+        }
+    except httpx.RequestError as e:
+        return {
+            "status": "error",
+            "message": f"AstrBot request error: {e!s}",
+            "base_url": client.base_url,
+            "hint": _astrbot_connect_hint(client),
+        }
 
     status = result.get("status")
     if status != "ok":
@@ -97,40 +177,169 @@ async def get_message_platforms() -> Dict[str, Any]:
 async def send_platform_message_direct(
     platform_id: str,
     target_id: str,
-    message_chain: List[MessagePart],
+    message_chain: Optional[List[MessagePart]] = None,
+    message: Optional[str] = None,
+    images: Optional[List[str]] = None,
+    files: Optional[List[str]] = None,
+    videos: Optional[List[str]] = None,
+    records: Optional[List[str]] = None,
     message_type: Literal["GroupMessage", "FriendMessage"] = "GroupMessage",
 ) -> Dict[str, Any]:
     """
-    Directly send a message to a platform session/group/user without invoking LLM.
+    Directly send a message chain to a platform group/user (bypass LLM).
 
     This calls AstrBot dashboard endpoint: POST /api/platform/send_message
+
+    Notes:
+      - This is for sending to a real platform target (group/user), not WebChat.
+      - Media parts:
+        - If `file_path` is a local path, this tool will upload it to AstrBot first, then send it as an AstrBot-hosted URL.
+        - If `file_path`/`url` is an http(s) URL, it will be forwarded as-is.
     """
     client = AstrBotClient.from_env()
+
+    if message_chain is None:
+        message_chain = []
+        if message:
+            message_chain.append({"type": "plain", "text": message})
+        for src in images or []:
+            message_chain.append({"type": "image", "file_path": src})
+        for src in files or []:
+            message_chain.append({"type": "file", "file_path": src})
+        for src in records or []:
+            message_chain.append({"type": "record", "file_path": src})
+        for src in videos or []:
+            message_chain.append({"type": "video", "file_path": src})
+
+    normalized_chain: List[Dict[str, Any]] = []
+    uploaded_attachments: List[Dict[str, Any]] = []
 
     for part in message_chain:
         p_type = part.get("type")
         if p_type in ("image", "file", "record", "video"):
             file_path = part.get("file_path")
             url = part.get("url")
-            src = file_path or url
-            if src and isinstance(src, str) and not src.startswith(("http://", "https://")):
+            file_name = part.get("file_name")
+            mime_type = part.get("mime_type")
+            src = url or file_path
+            if not src:
+                continue
+
+            normalized = dict(part)
+            if not isinstance(src, str):
                 return {
                     "status": "error",
-                    "message": (
-                        "Direct-send does not support local file_path (AstrBot cannot access MCP local files). "
-                        "Use http(s) URLs in 'url' or 'file_path', or use send_platform_message (webchat) instead."
-                    ),
+                    "message": f"Invalid media source (expected str): {src!r}",
                     "platform_id": platform_id,
                     "session_id": str(target_id),
                     "message_type": message_type,
+                    "part": dict(part),
                 }
+
+            if src.startswith(("http://", "https://")):
+                normalized["file_path"] = src
+                normalized.pop("url", None)
+            else:
+                try:
+                    local_path = _resolve_local_file_path(client, src)
+                except ValueError as e:
+                    return {
+                        "status": "error",
+                        "message": str(e),
+                        "platform_id": platform_id,
+                        "session_id": str(target_id),
+                        "message_type": message_type,
+                        "part": dict(part),
+                        "hint": "Set ASTRBOTMCP_FILE_ROOT to control how relative paths are resolved.",
+                    }
+                except FileNotFoundError:
+                    return {
+                        "status": "error",
+                        "message": f"Local file_path does not exist: {src!r}",
+                        "platform_id": platform_id,
+                        "session_id": str(target_id),
+                        "message_type": message_type,
+                        "part": dict(part),
+                        "hint": "If you passed a relative path, set ASTRBOTMCP_FILE_ROOT (or run the server in the correct working directory).",
+                    }
+
+                if not file_name:
+                    file_name = os.path.basename(local_path) or None
+
+                try:
+                    attach_resp = await client.post_attachment_file(
+                        local_path,
+                        file_name=file_name,
+                        mime_type=mime_type,
+                    )
+                except httpx.HTTPStatusError as e:
+                    return {
+                        "status": "error",
+                        "message": f"AstrBot API error: {e.response.status_code}",
+                        "platform_id": platform_id,
+                        "session_id": str(target_id),
+                        "message_type": message_type,
+                        "base_url": client.base_url,
+                        "detail": _httpx_error_detail(e),
+                    }
+                except httpx.RequestError as e:
+                    return {
+                        "status": "error",
+                        "message": f"AstrBot request error: {e!s}",
+                        "platform_id": platform_id,
+                        "session_id": str(target_id),
+                        "message_type": message_type,
+                        "base_url": client.base_url,
+                        "hint": _astrbot_connect_hint(client),
+                    }
+
+                if attach_resp.get("status") != "ok":
+                    return {
+                        "status": attach_resp.get("status"),
+                        "message": attach_resp.get("message"),
+                        "platform_id": platform_id,
+                        "session_id": str(target_id),
+                        "message_type": message_type,
+                        "raw": attach_resp,
+                    }
+
+                attach_data = attach_resp.get("data") or {}
+                attachment_id = attach_data.get("attachment_id")
+                if not attachment_id:
+                    return {
+                        "status": "error",
+                        "message": "Attachment upload succeeded but attachment_id is missing",
+                        "platform_id": platform_id,
+                        "session_id": str(target_id),
+                        "message_type": message_type,
+                        "raw": attach_resp,
+                    }
+
+                normalized["file_path"] = _attachment_download_url(client, str(attachment_id))
+                normalized.pop("url", None)
+                normalized.pop("file_name", None)
+                normalized.pop("mime_type", None)
+                uploaded_attachments.append(attach_data)
+
+            normalized_chain.append(normalized)
+        else:
+            normalized_chain.append(dict(part))
+
+    if not normalized_chain:
+        return {
+            "status": "error",
+            "message": "message_chain did not produce any valid message parts",
+            "platform_id": platform_id,
+            "session_id": str(target_id),
+            "message_type": message_type,
+        }
 
     try:
         direct_resp = await client.send_platform_message_direct(
             platform_id=platform_id,
             message_type=message_type,
             session_id=str(target_id),
-            message_chain=[dict(p) for p in message_chain],
+            message_chain=normalized_chain,
         )
     except httpx.HTTPStatusError as e:
         detail: Any
@@ -174,12 +383,18 @@ async def send_platform_message_direct(
         "platform_id": data.get("platform_id", platform_id),
         "session_id": data.get("session_id", str(target_id)),
         "message_type": data.get("message_type", message_type),
+        "uploaded_attachments": uploaded_attachments,
     }
 
 
 async def send_platform_message(
     platform_id: str,
-    message_chain: List[MessagePart],
+    message_chain: Optional[List[MessagePart]] = None,
+    message: Optional[str] = None,
+    images: Optional[List[str]] = None,
+    files: Optional[List[str]] = None,
+    videos: Optional[List[str]] = None,
+    records: Optional[List[str]] = None,
     session_id: Optional[str] = None,
     selected_provider: Optional[str] = None,
     selected_model: Optional[str] = None,
@@ -193,17 +408,48 @@ async def send_platform_message(
       - message_chain: 消息链，由 MessagePart 列表组成。
         - 文本:  {\"type\": \"plain\", \"text\": \"...\"}
         - 回复:  {\"type\": \"reply\", \"message_id\": \"...\"}
-        - 图片/文件/语音/视频: {\"type\": \"image\"|\"file\"|\"record\"|\"video\", \"file_path\": \"本地文件路径\"}
+        - 图片/文件/语音/视频: {\"type\": \"image\"|\"file\"|\"record\"|\"video\", \"file_path\": \"本地路径或URL\"} 或 {\"type\": \"...\", \"url\": \"http(s) URL\"}
+      - message / images / files / videos / records: 可选便捷参数；当未传 message_chain 时，会自动拼成消息链。
       - session_id: 可选的平台会话 ID；如果为空，会自动为该平台创建新会话。
       - selected_provider / selected_model: 可选，指定 AstrBot 内部的 provider/model。
       - enable_streaming: 是否启用流式回复（影响 AstrBot 返回的 SSE 事件类型）。
     """
     client = AstrBotClient.from_env()
 
+    if message_chain is None:
+        message_chain = []
+        if message:
+            message_chain.append({"type": "plain", "text": message})
+        for src in images or []:
+            message_chain.append({"type": "image", "file_path": src})
+        for src in files or []:
+            message_chain.append({"type": "file", "file_path": src})
+        for src in records or []:
+            message_chain.append({"type": "record", "file_path": src})
+        for src in videos or []:
+            message_chain.append({"type": "video", "file_path": src})
+
     # 1. 确保有 session_id
     used_session_id = session_id
     if not used_session_id:
-        session_resp = await client.create_platform_session(platform_id=platform_id)
+        try:
+            session_resp = await client.create_platform_session(platform_id=platform_id)
+        except httpx.HTTPStatusError as e:
+            return {
+                "status": "error",
+                "message": f"AstrBot API error: {e.response.status_code}",
+                "platform_id": platform_id,
+                "base_url": client.base_url,
+                "detail": _httpx_error_detail(e),
+            }
+        except httpx.RequestError as e:
+            return {
+                "status": "error",
+                "message": f"AstrBot request error: {e!s}",
+                "platform_id": platform_id,
+                "base_url": client.base_url,
+                "hint": _astrbot_connect_hint(client),
+            }
         if session_resp.get("status") != "ok":
             return {
                 "status": session_resp.get("status"),
@@ -235,9 +481,95 @@ async def send_platform_message(
                 message_parts.append({"type": "reply", "message_id": msg_id})
         elif p_type in ("image", "file", "record", "video"):
             file_path = part.get("file_path")
-            if not file_path:
+            url = part.get("url")
+            file_name = part.get("file_name")
+            mime_type = part.get("mime_type")
+
+            src = url or file_path
+            if not src:
                 continue
-            attach_resp = await client.post_attachment_file(file_path)
+
+            if isinstance(src, str) and src.startswith(("http://", "https://")):
+                if not file_name:
+                    parsed = urlparse(src)
+                    file_name = os.path.basename(parsed.path) or None
+                try:
+                    attach_resp = await client.post_attachment_url(
+                        src,
+                        file_name=file_name,
+                        mime_type=mime_type,
+                    )
+                except httpx.HTTPStatusError as e:
+                    return {
+                        "status": "error",
+                        "message": f"AstrBot API error: {e.response.status_code}",
+                        "platform_id": platform_id,
+                        "session_id": used_session_id,
+                        "base_url": client.base_url,
+                        "detail": _httpx_error_detail(e),
+                    }
+                except httpx.RequestError as e:
+                    return {
+                        "status": "error",
+                        "message": f"AstrBot request error: {e!s}",
+                        "platform_id": platform_id,
+                        "session_id": used_session_id,
+                        "base_url": client.base_url,
+                        "hint": _astrbot_connect_hint(client),
+                    }
+            else:
+                if not isinstance(src, str):
+                    return {
+                        "status": "error",
+                        "message": f"Invalid local file_path: {src!r}",
+                        "platform_id": platform_id,
+                        "session_id": used_session_id,
+                        "part": dict(part),
+                    }
+                try:
+                    src = _resolve_local_file_path(client, src)
+                except ValueError as e:
+                    return {
+                        "status": "error",
+                        "message": str(e),
+                        "platform_id": platform_id,
+                        "session_id": used_session_id,
+                        "part": dict(part),
+                        "hint": "Set ASTRBOTMCP_FILE_ROOT to control how relative paths are resolved.",
+                    }
+                except FileNotFoundError:
+                    return {
+                        "status": "error",
+                        "message": f"Local file_path does not exist: {src!r}",
+                        "platform_id": platform_id,
+                        "session_id": used_session_id,
+                        "part": dict(part),
+                        "hint": "If you passed a relative path, set ASTRBOTMCP_FILE_ROOT (or run the server in the correct working directory).",
+                    }
+                try:
+                    attach_resp = await client.post_attachment_file(
+                        src,
+                        file_name=file_name,
+                        mime_type=mime_type,
+                    )
+                except httpx.HTTPStatusError as e:
+                    return {
+                        "status": "error",
+                        "message": f"AstrBot API error: {e.response.status_code}",
+                        "platform_id": platform_id,
+                        "session_id": used_session_id,
+                        "base_url": client.base_url,
+                        "detail": _httpx_error_detail(e),
+                    }
+                except httpx.RequestError as e:
+                    return {
+                        "status": "error",
+                        "message": f"AstrBot request error: {e!s}",
+                        "platform_id": platform_id,
+                        "session_id": used_session_id,
+                        "base_url": client.base_url,
+                        "hint": _astrbot_connect_hint(client),
+                    }
             if attach_resp.get("status") != "ok":
                 return {
                     "status": attach_resp.get("status"),
@@ -359,8 +691,22 @@ async def restart_astrbot() -> Dict[str, Any]:
     重启 AstrBot Core，对应 /api/stat/restart-core。
     """
     client = AstrBotClient.from_env()
-    result = await client.restart_core()
-    return result
+    try:
+        return await client.restart_core()
+    except httpx.HTTPStatusError as e:
+        return {
+            "status": "error",
+            "message": f"AstrBot API error: {e.response.status_code}",
+            "base_url": client.base_url,
+            "detail": _httpx_error_detail(e),
+        }
+    except httpx.RequestError as e:
+        return {
+            "status": "error",
+            "message": f"AstrBot request error: {e!s}",
+            "base_url": client.base_url,
+            "hint": _astrbot_connect_hint(client),
+        }
 
 
 async def get_platform_session_messages(
@@ -373,7 +719,24 @@ async def get_platform_session_messages(
       - session_id: 平台会话 ID（可从 send_platform_message 的返回值中获得）。
     """
     client = AstrBotClient.from_env()
-    result = await client.get_platform_session(session_id=session_id)
+    try:
+        result = await client.get_platform_session(session_id=session_id)
+    except httpx.HTTPStatusError as e:
+        return {
+            "status": "error",
+            "message": f"AstrBot API error: {e.response.status_code}",
+            "session_id": session_id,
+            "base_url": client.base_url,
+            "detail": _httpx_error_detail(e),
+        }
+    except httpx.RequestError as e:
+        return {
+            "status": "error",
+            "message": f"AstrBot request error: {e!s}",
+            "session_id": session_id,
+            "base_url": client.base_url,
+            "hint": _astrbot_connect_hint(client),
+        }
 
     status = result.get("status")
     if status != "ok":

@@ -31,7 +31,9 @@ uv run --project . astrbot-mcp
         "ASTRBOT_BASE_URL": "http://127.0.0.1:6185",
         "ASTRBOT_TIMEOUT": "30",
         "ASTRBOT_USERNAME": "your_username",
-        "ASTRBOT_PASSWORD": "your_password"
+        "ASTRBOT_PASSWORD": "your_password",
+        "ASTRBOTMCP_FILE_ROOT": "D:/path/to/your/files",
+        "ASTRBOTMCP_DIRECT_MEDIA_MODE": "auto"
       }
     }
   }
@@ -45,4 +47,3 @@ uv run --project . astrbot-mcp
 - 使用 `astrbot-mcp`（console script），它会调用 `astrbot_mcp.server:main`。
 - 请您务必配置pypl代理：setx UV_INDEX_URL https://pypi.tuna.tsinghua.edu.cn/simple
   
-

@@ -176,14 +176,22 @@ AstrBot 已经内置了 MCP 客户端管理逻辑（参见 `routes/tools.py`）�
 
 - 主要参数：
   - `platform_id`：平台 ID，例如 `"webchat"` 或其它配置中的平台；
-  - `message_chain`：消息链，列表形式，每个元素为：
+  - `message_chain`（可选）：消息链，列表形式，每个元素为：
 
     ```json
     { "type": "plain", "text": "你好" }
-    { "type": "image", "file_path": "/absolute/path/to/image.png" }
-    { "type": "file",  "file_path": "/absolute/path/to/file.pdf" }
+    { "type": "image", "file_path": "relative/path/to/image.png" }
+    { "type": "image", "url": "https://example.com/image.png" }
+    { "type": "file",  "file_path": "relative/path/to/file.pdf" }
+    { "type": "video", "url": "https://example.com/video.mp4", "file_name": "video.mp4" }
     ```
 
+    说明：
+    - `file_path` 支持本地路径（绝对/相对）或 http(s) URL；相对路径会按 `ASTRBOTMCP_FILE_ROOT`（或进程工作目录）解析；
+    - `url` 用于显式传入 http(s) URL；
+    - `file_name` / `mime_type`（可选）用于覆盖上传时的文件名/类型。
+
+  - `message` / `images` / `files` / `videos` / `records`（可选）：便捷参数；当未传 `message_chain` 时，会自动拼成消息链。
   - `session_id`（可选）：已有的平台会话 ID；
   - `selected_provider` / `selected_model`（可选）：AstrBot 内部 provider / model；
     - 若不传，将使用 MCP 服务端环境变量 `ASTRBOT_DEFAULT_PROVIDER` / `ASTRBOT_DEFAULT_MODEL`（如已设置），否则交由 AstrBot 使用其默认配置。
@@ -204,6 +212,20 @@ AstrBot 已经内置了 MCP 客户端管理逻辑（参见 `routes/tools.py`）�
 ```
 
 你可以从返回的 `session_id` 中获取后续会话的标识，用于调用 `get_platform_session_messages`。
+
+### 3.1 `send_platform_message_direct`
+
+- 用途：绕过 LLM，直接调用 AstrBot 的平台适配器接口 `/api/platform/send_message` 给指定群/好友发送消息链。
+- 主要参数：
+  - `platform_id`：平台 ID；
+  - `target_id`：群号/用户 ID；
+  - `message_type`：`"GroupMessage"` 或 `"FriendMessage"`；
+  - `message_chain`（可选）或 `message` / `images` / `files` / `videos` / `records`（可选）：消息内容。
+
+注意：`send_platform_message_direct` 是“直接给平台群/好友发消息”（不是 WebChat）。
+
+- 媒体段如果传入本地 `file_path`（例如 `D:\...`），MCP 会先把该文件上传到 AstrBot（`/api/chat/post_file`），再把它转换成 AstrBot 可下载的 http(s) URL 发送给平台适配器。
+- 如果你直接传入 http(s) URL（通过 `url` 或 `file_path`），则会原样转发。
 
 ### 4. `restart_astrbot`
 
