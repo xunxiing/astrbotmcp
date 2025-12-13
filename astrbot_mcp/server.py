@@ -26,6 +26,25 @@ server.tool(
 )
 
 
+@server.resource("astrbot://info")
+def astrbot_info():
+    """
+    Basic info resource to allow MCP hosts to discover this server.
+    """
+    return {
+        "name": "astrbot-mcp",
+        "type": "tool-provider",
+        "tools": [
+            "get_astrbot_logs",
+            "get_message_platforms",
+            "send_platform_message",
+            "send_platform_message_direct",
+            "restart_astrbot",
+            "get_platform_session_messages",
+        ],
+    }
+
+
 def main() -> None:
     """
     Entry point for running the MCP server.

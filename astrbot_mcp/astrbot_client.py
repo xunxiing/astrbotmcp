@@ -298,18 +298,65 @@ class AstrBotClient:
         response = await self._request("GET", "/api/chat/new_session", params=params)
         return response.json()
 
-    async def get_platform_session(
+    async def get_platform_session( 
+        self, 
+        session_id: str, 
+    ) -> Dict[str, Any]: 
+        """ 
+        Get a platform session's history via /api/chat/get_session. 
+        """ 
+        response = await self._request( 
+            "GET", 
+            "/api/chat/get_session", 
+            params={"session_id": session_id}, 
+        ) 
+        return response.json() 
+
+    async def list_active_umos(self) -> Dict[str, Any]:
+        """
+        List active UMOs (unified message origins) via /api/session/active-umos.
+        """
+        response = await self._request("GET", "/api/session/active-umos")
+        return response.json()
+
+    async def list_conversations(
         self,
-        session_id: str,
+        *,
+        page: int = 1,
+        page_size: int = 20,
+        platforms: str | None = None,
+        message_types: str | None = None,
+        search: str | None = None,
     ) -> Dict[str, Any]:
         """
-        Get a platform session's history via /api/chat/get_session.
+        List conversations via /api/conversation/list (dashboard API).
+
+        `platforms` and `message_types` are comma-separated strings (as expected by AstrBot).
         """
-        response = await self._request(
-            "GET",
-            "/api/chat/get_session",
-            params={"session_id": session_id},
-        )
+        params: Dict[str, Any] = {
+            "page": page,
+            "page_size": page_size,
+        }
+        if platforms:
+            params["platforms"] = platforms
+        if message_types:
+            params["message_types"] = message_types
+        if search:
+            params["search"] = search
+        response = await self._request("GET", "/api/conversation/list", params=params)
+        return response.json()
+
+    async def get_conversation_detail(
+        self,
+        *,
+        user_id: str,
+        cid: str,
+    ) -> Dict[str, Any]:
+        """
+        Get a conversation detail (including history) via /api/conversation/detail.
+        """
+        payload = {"user_id": user_id, "cid": cid}
+        response = await self._request("POST", "/api/conversation/detail", json_body=payload)
         return response.json()
 
     async def post_attachment_file(
