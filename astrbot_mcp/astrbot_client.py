@@ -310,6 +310,28 @@ class AstrBotClient:
             json_body=payload,
         )
 
+    async def send_platform_message_direct(
+        self,
+        *,
+        platform_id: str,
+        message_type: str,
+        session_id: str,
+        message_chain: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """
+        Send a message via AstrBot platform adapter (bypass LLM).
+
+        Calls /api/platform/send_message (requires AstrBot >= version that includes this route).
+        """
+        payload: Dict[str, Any] = {
+            "platform_id": platform_id,
+            "message_type": message_type,
+            "session_id": session_id,
+            "message_chain": message_chain,
+        }
+        response = await self._request("POST", "/api/platform/send_message", json_body=payload)
+        return response.json()
+
     # ---- Stat / lifecycle APIs ---------------------------------------
 
     async def restart_core(self) -> Dict[str, Any]:

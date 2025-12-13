@@ -17,6 +17,7 @@ server = FastMCP(
 # Register tools with FastMCP
 server.tool(astrbot_tools.get_astrbot_logs, name="get_astrbot_logs")
 server.tool(astrbot_tools.get_message_platforms, name="get_message_platforms")
+server.tool(astrbot_tools.send_platform_message_direct, name="send_platform_message_direct")
 server.tool(astrbot_tools.send_platform_message, name="send_platform_message")
 server.tool(astrbot_tools.restart_astrbot, name="restart_astrbot")
 server.tool(
@@ -36,5 +37,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 

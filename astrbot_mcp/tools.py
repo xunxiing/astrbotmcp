@@ -94,6 +94,89 @@ async def get_message_platforms() -> Dict[str, Any]:
     }
 
 
+async def send_platform_message_direct(
+    platform_id: str,
+    target_id: str,
+    message_chain: List[MessagePart],
+    message_type: Literal["GroupMessage", "FriendMessage"] = "GroupMessage",
+) -> Dict[str, Any]:
+    """
+    Directly send a message to a platform session/group/user without invoking LLM.
+
+    This calls AstrBot dashboard endpoint: POST /api/platform/send_message
+    """
+    client = AstrBotClient.from_env()
+
+    for part in message_chain:
+        p_type = part.get("type")
+        if p_type in ("image", "file", "record", "video"):
+            file_path = part.get("file_path")
+            url = part.get("url")
+            src = file_path or url
+            if src and isinstance(src, str) and not src.startswith(("http://", "https://")):
+                return {
+                    "status": "error",
+                    "message": (
+                        "Direct-send does not support local file_path (AstrBot cannot access MCP local files). "
+                        "Use http(s) URLs in 'url' or 'file_path', or use send_platform_message (webchat) instead."
+                    ),
+                    "platform_id": platform_id,
+                    "session_id": str(target_id),
+                    "message_type": message_type,
+                }
+
+    try:
+        direct_resp = await client.send_platform_message_direct(
+            platform_id=platform_id,
+            message_type=message_type,
+            session_id=str(target_id),
+            message_chain=[dict(p) for p in message_chain],
+        )
+    except httpx.HTTPStatusError as e:
+        detail: Any
+        try:
+            detail = e.response.json()
+        except Exception:
+            detail = e.response.text
+
+        return {
+            "status": "error",
+            "message": f"AstrBot API error: {e.response.status_code}",
+            "platform_id": platform_id,
+            "session_id": str(target_id),
+            "message_type": message_type,
+            "detail": detail,
+            "hint": "Ensure AstrBot includes /api/platform/send_message and you are authenticated.",
+        }
+    except httpx.RequestError as e:
+        return {
+            "status": "error",
+            "message": f"AstrBot request error: {e!s}",
+            "platform_id": platform_id,
+            "session_id": str(target_id),
+            "message_type": message_type,
+        }
+
+    status = direct_resp.get("status")
+    if status != "ok":
+        return {
+            "status": status,
+            "platform_id": platform_id,
+            "session_id": str(target_id),
+            "message_type": message_type,
+            "message": direct_resp.get("message"),
+            "raw": direct_resp,
+        }
+
+    data = direct_resp.get("data") or {}
+    return {
+        "status": "ok",
+        "platform_id": data.get("platform_id", platform_id),
+        "session_id": data.get("session_id", str(target_id)),
+        "message_type": data.get("message_type", message_type),
+    }
+
+
 async def send_platform_message(
     platform_id: str,
     message_chain: List[MessagePart],
