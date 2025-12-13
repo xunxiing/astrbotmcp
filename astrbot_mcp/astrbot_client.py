@@ -140,11 +140,14 @@ class AstrBotClient:
         Consume a simple SSE endpoint and return parsed JSON payloads.
 
         AstrBot's SSE endpoints use `data: {...}\\n\\n` format per event.
+
+        `max_seconds` is a soft upper bound for how long we wait:
+        - 如果持续有事件流入，最多等待约 `max_seconds` 秒；
+        - 如果在这一段时间内**完全没有任何事件**，也会在超时后返回，
+          避免长时间挂起导致 MCP 端工具调用超时。
         """
         url = f"{self.base_url}{path}"
         events: List[Dict[str, Any]] = []
-
-        start_time = asyncio.get_event_loop().time()
 
         headers = await self._get_auth_headers()
 
@@ -158,35 +161,41 @@ class AstrBotClient:
             ) as response:
                 response.raise_for_status()
 
-                async for line in response.aiter_lines():
-                    if not line:
-                        # Heartbeats / blank lines
-                        continue
+                async def consume() -> None:
+                    async for line in response.aiter_lines():
+                        if not line:
+                            # Heartbeats / blank lines
+                            continue
 
-                    if not line.startswith("data:"):
-                        continue
+                        if not line.startswith("data:"):
+                            continue
 
-                    _, data_str = line.split("data:", 1)
-                    data_str = data_str.strip()
+                        _, data_str = line.split("data:", 1)
+                        data_str = data_str.strip()
 
-                    if not data_str:
-                        continue
+                        if not data_str:
+                            continue
 
-                    try:
-                        payload = json.loads(data_str)
-                    except json.JSONDecodeError:
-                        continue
+                        try:
+                            payload = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
 
-                    if isinstance(payload, dict):
-                        events.append(payload)
+                        if isinstance(payload, dict):
+                            events.append(payload)
 
-                    if max_events is not None and len(events) >= max_events:
-                        break
-
-                    if max_seconds is not None:
-                        now = asyncio.get_event_loop().time()
-                        if now - start_time >= max_seconds:
+                        if max_events is not None and len(events) >= max_events:
+                            # Enough events collected; stop consuming.
                             break
+
+                if max_seconds is not None and max_seconds > 0:
+                    try:
+                        await asyncio.wait_for(consume(), timeout=max_seconds)
+                    except asyncio.TimeoutError:
+                        # Time window elapsed; return whatever we collected so far.
+                        pass
+                else:
+                    await consume()
 
         return events
 

@@ -37,12 +37,25 @@ async def get_astrbot_logs(
     client = AstrBotClient.from_env()
 
     if wait_seconds > 0:
-        events = await client.get_live_logs(wait_seconds=wait_seconds, max_events=max_events)
-        return {
-            "mode": "live",
-            "wait_seconds": wait_seconds,
-            "events": events,
-        }
+        try:
+            events = await client.get_live_logs(
+                wait_seconds=wait_seconds,
+                max_events=max_events,
+            )
+            return {
+                "mode": "live",
+                "wait_seconds": wait_seconds,
+                "events": events,
+            }
+        except Exception as e:
+            # 避免异常直接向 MCP 宿主抛出导致 “Error calling tool”，
+            # 而是把错误信息封装到正常的返回结构中，方便前端展示。
+            return {
+                "mode": "live",
+                "wait_seconds": wait_seconds,
+                "status": "error",
+                "message": str(e),
+            }
 
     history = await client.get_log_history()
     status = history.get("status")
@@ -231,5 +244,4 @@ async def get_platform_session_messages(
         "history": data.get("history", []),
         "is_running": data.get("is_running", False),
     }
-
 

@@ -8,3 +8,16 @@ dependencies = [
     "fastmcp>=2.13.3",
     "httpx>=0.28.1",
 ]
+
+[project.scripts]
+astrbot-mcp = "astrbot_mcp.server:main"
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["astrbot_mcp"]

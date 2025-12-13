@@ -11,7 +11,5 @@ existing AstrBot HTTP API instance to provide tools for:
 - Reading platform session message history
 """
 
-from .server import server
-
-__all__ = ["server"]
+__all__ = []
 
