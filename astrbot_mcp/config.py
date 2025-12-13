@@ -12,6 +12,8 @@ class AstrBotSettings:
     timeout: float = 30.0
     username: str | None = None
     password: str | None = None
+    default_provider: str | None = None
+    default_model: str | None = None
 
 
 def _get_env(name: str) -> str | None:
@@ -33,6 +35,8 @@ def get_settings() -> AstrBotSettings:
       - ASTRBOT_TIMEOUT: Request timeout in seconds (default: 30).
       - ASTRBOT_USERNAME: Dashboard username.
       - ASTRBOT_PASSWORD: Dashboard password.
+      - ASTRBOT_DEFAULT_PROVIDER: Default provider id to use for /api/chat/send.
+      - ASTRBOT_DEFAULT_MODEL: Default model id to use for /api/chat/send.
     """
     base_url = _get_env("ASTRBOT_BASE_URL")
     if not base_url:
@@ -54,12 +58,15 @@ def get_settings() -> AstrBotSettings:
 
     username = _get_env("ASTRBOT_USERNAME")
     password = _get_env("ASTRBOT_PASSWORD")
+    default_provider = _get_env("ASTRBOT_DEFAULT_PROVIDER")
+    default_model = _get_env("ASTRBOT_DEFAULT_MODEL")
 
     return AstrBotSettings(
         base_url=base_url,
         timeout=timeout,
         username=username,
         password=password,
+        default_provider=default_provider,
+        default_model=default_model,
     )
-
 

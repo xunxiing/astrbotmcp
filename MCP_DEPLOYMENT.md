@@ -68,18 +68,27 @@
      export ASTRBOT_BASE_URL="http://127.0.0.1:8000"
      ```
 
-   - 可选：`ASTRBOT_TIMEOUT`（默认 30 秒），设置 HTTP 请求超时时间：
+    - 可选：`ASTRBOT_TIMEOUT`（默认 30 秒），设置 HTTP 请求超时时间：
 
-     ```bash
-     export ASTRBOT_TIMEOUT="30"
-     ```
+      ```bash
+      export ASTRBOT_TIMEOUT="30"
+      ```
 
-   在 Windows PowerShell 中可以使用：
+    - 可选：`ASTRBOT_DEFAULT_PROVIDER` / `ASTRBOT_DEFAULT_MODEL`：为 `send_platform_message` 默认指定 provider / model（不传 `selected_provider` / `selected_model` 时使用）：
 
-   ```powershell
-   $env:ASTRBOT_BASE_URL = "http://127.0.0.1:8000"
-   $env:ASTRBOT_TIMEOUT = "30"
-   ```
+      ```bash
+      export ASTRBOT_DEFAULT_PROVIDER="your-provider-id"
+      export ASTRBOT_DEFAULT_MODEL="your-model-id"
+      ```
+
+    在 Windows PowerShell 中可以使用：
+
+    ```powershell
+    $env:ASTRBOT_BASE_URL = "http://127.0.0.1:8000"
+    $env:ASTRBOT_TIMEOUT = "30"
+    $env:ASTRBOT_DEFAULT_PROVIDER = "your-provider-id"
+    $env:ASTRBOT_DEFAULT_MODEL = "your-model-id"
+    ```
 
 ---
 
@@ -177,6 +186,7 @@ AstrBot 已经内置了 MCP 客户端管理逻辑（参见 `routes/tools.py`）�
 
   - `session_id`（可选）：已有的平台会话 ID；
   - `selected_provider` / `selected_model`（可选）：AstrBot 内部 provider / model；
+    - 若不传，将使用 MCP 服务端环境变量 `ASTRBOT_DEFAULT_PROVIDER` / `ASTRBOT_DEFAULT_MODEL`（如已设置），否则交由 AstrBot 使用其默认配置。
   - `enable_streaming`（bool，可选，默认 true）。
 
 - 返回值概要：
@@ -227,4 +237,3 @@ AstrBot 已经内置了 MCP 客户端管理逻辑（参见 `routes/tools.py`）�
   - 在 `astrbot_mcp/server.py` 中注册新的工具。
 
 如你需要，我可以在这个基础上继续扩展更多工具或补充类型约束。 
-

@@ -30,7 +30,9 @@ uv run --project . astrbot-mcp
       ],
       "env": {
         "ASTRBOT_BASE_URL": "http://127.0.0.1:6185",
-        "ASTRBOT_TIMEOUT": "30"
+        "ASTRBOT_TIMEOUT": "30",
+        "ASTRBOT_DEFAULT_PROVIDER": "your-provider-id",
+        "ASTRBOT_DEFAULT_MODEL": "your-model-id"
       }
     }
   }

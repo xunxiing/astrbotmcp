@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import httpx
 from typing import Any, Dict, List, Literal, Optional, TypedDict
 
 from .astrbot_client import AstrBotClient
@@ -181,16 +182,73 @@ async def send_platform_message(
         }
 
     # 3. 调用 /api/chat/send 并消费 SSE 回复
-    events = await client.send_chat_message_sse(
-        session_id=used_session_id,
-        message_parts=message_parts,
-        selected_provider=selected_provider,
-        selected_model=selected_model,
-        enable_streaming=enable_streaming,
-    )
+    effective_provider = selected_provider or client.settings.default_provider
+    effective_model = selected_model or client.settings.default_model
+
+    try:
+        events = await client.send_chat_message_sse(
+            session_id=used_session_id,
+            message_parts=message_parts,
+            selected_provider=effective_provider,
+            selected_model=effective_model,
+            enable_streaming=enable_streaming,
+        )
+    except httpx.HTTPStatusError as e:
+        detail: Any
+        try:
+            detail = e.response.json()
+        except Exception:
+            detail = e.response.text
+
+        return {
+            "status": "error",
+            "message": f"AstrBot API error: {e.response.status_code}",
+            "platform_id": platform_id,
+            "session_id": used_session_id,
+            "selected_provider": effective_provider,
+            "selected_model": effective_model,
+            "request_message_parts": message_parts,
+            "detail": detail,
+            "hint": (
+                "If you see 'has no provider supported' in AstrBot logs, "
+                "set selected_provider/selected_model (or env ASTRBOT_DEFAULT_PROVIDER/ASTRBOT_DEFAULT_MODEL)."
+            ),
+        }
+    except httpx.RequestError as e:
+        return {
+            "status": "error",
+            "message": f"AstrBot request error: {e!s}",
+            "platform_id": platform_id,
+            "session_id": used_session_id,
+            "selected_provider": effective_provider,
+            "selected_model": effective_model,
+            "request_message_parts": message_parts,
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e),
+            "platform_id": platform_id,
+            "session_id": used_session_id,
+            "selected_provider": effective_provider,
+            "selected_model": effective_model,
+            "request_message_parts": message_parts,
+        }
 
     # 简单聚合文本回复（仅供参考，保留原始事件）
     reply_text_chunks: List[str] = []
+    if not events:
+        return {
+            "status": "error",
+            "message": "AstrBot returned no SSE events for /api/chat/send",
+            "platform_id": platform_id,
+            "session_id": used_session_id,
+            "selected_provider": effective_provider,
+            "selected_model": effective_model,
+            "request_message_parts": message_parts,
+            "hint": "Check AstrBot logs for the root cause (often provider/model config).",
+        }
+
     for ev in events:
         if ev.get("type") in ("plain", "complete"):
             data = ev.get("data")
@@ -201,6 +259,8 @@ async def send_platform_message(
         "status": "ok",
         "platform_id": platform_id,
         "session_id": used_session_id,
+        "selected_provider": effective_provider,
+        "selected_model": effective_model,
         "request_message_parts": message_parts,
         "uploaded_attachments": uploaded_attachments,
         "reply_events": events,
@@ -244,4 +304,3 @@ async def get_platform_session_messages(
         "history": data.get("history", []),
         "is_running": data.get("is_running", False),
     }
-
