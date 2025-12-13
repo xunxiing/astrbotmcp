@@ -1,5 +1,7 @@
 ## AstrBot MCP Server
 
+[![MCP Badge](https://lobehub.com/badge/mcp/xunxiing-astrbotmcp)](https://lobehub.com/mcp/xunxiing-astrbotmcp)
+
 本项目是一个基于 FastMCP 的 AstrBot MCP 服务器，通过 HTTP 与已有的 AstrBot 实例交互。
 
 ### 本地运行
