@@ -281,6 +281,29 @@ class AstrBotClient:
         response = await self._request("GET", "/api/config/platform/list")
         return response.json()
 
+    # ---- Plugin / market APIs ----------------------------------------
+
+    async def get_plugin_market_list(
+        self,
+        *,
+        custom_registry: str | None = None,
+        force_refresh: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Get plugin market list via /api/plugin/market_list.
+
+        Args:
+            custom_registry: Optional custom registry URL (AstrBot will fetch from it).
+            force_refresh: If True, bypass AstrBot's local cache.
+        """
+        params: Dict[str, Any] = {}
+        if custom_registry:
+            params["custom_registry"] = custom_registry
+        if force_refresh:
+            params["force_refresh"] = "true"
+        response = await self._request("GET", "/api/plugin/market_list", params=params or None)
+        return response.json()
+
     # ---- Chat / platform session APIs --------------------------------
 
     async def create_platform_session(

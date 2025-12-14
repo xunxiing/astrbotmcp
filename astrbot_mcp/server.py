@@ -10,7 +10,8 @@ server = FastMCP(
         "MCP server for interacting with an existing AstrBot instance. "
         "Provides tools to read logs, list configured message platforms, "
         "send message chains (including files) via the web chat API, "
-        "restart AstrBot core, and read platform session message history."
+        "restart AstrBot core, read platform session message history, "
+        "and browse the AstrBot plugin market."
     ),
 )
 
@@ -24,6 +25,7 @@ server.tool(
     astrbot_tools.get_platform_session_messages,
     name="get_platform_session_messages",
 )
+server.tool(astrbot_tools.browse_plugin_market, name="browse_plugin_market")
 
 
 @server.resource("astrbot://info")
@@ -41,6 +43,7 @@ def astrbot_info():
             "send_platform_message_direct",
             "restart_astrbot",
             "get_platform_session_messages",
+            "browse_plugin_market",
         ],
     }
 
@@ -56,4 +59,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

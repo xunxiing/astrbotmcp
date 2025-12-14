@@ -4,6 +4,14 @@
 
 本项目是一个基于 FastMCP 的 AstrBot MCP 服务器，通过 HTTP 与已有的 AstrBot 实例交互。
 
+当前包含的 MCP 工具（tools）：
+- `get_astrbot_logs`：查看日志（历史/实时）
+- `get_message_platforms`：列出已配置平台
+- `send_platform_message` / `send_platform_message_direct`：发送消息链
+- `get_platform_session_messages`：读取会话消息历史
+- `restart_astrbot`：重启 AstrBot Core
+- `browse_plugin_market`：浏览插件市场（搜索/按更新时间排序）
+
 ### 本地运行
 
 在项目根目录执行（需要安装 `uv`）：
@@ -69,4 +77,3 @@ uv run --project . astrbot-mcp
 - 使用 `--project /path/to/astrbotmcp` 指定项目路径。
 - 使用 `astrbot-mcp`（console script），它会调用 `astrbot_mcp.server:main`。
 - 请您务必配置pypl代理：setx UV_INDEX_URL https://pypi.tuna.tsinghua.edu.cn/simple
-

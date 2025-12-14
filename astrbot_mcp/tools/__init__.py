@@ -24,6 +24,7 @@ from .message_tools import (
 )
 from .platform_tools import get_message_platforms
 from .session_tools import get_platform_session_messages
+from .plugin_market_tools import browse_plugin_market
 
 # 导入类型定义
 from .types import MessagePart
@@ -46,6 +47,7 @@ __all__ = [
     "send_platform_message",
     "restart_astrbot",
     "get_platform_session_messages",
+    "browse_plugin_market",
     
     # 类型定义
     "MessagePart",
