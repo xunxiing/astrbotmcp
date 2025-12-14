@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import argparse
+from importlib.metadata import PackageNotFoundError, version
+
 from fastmcp.server import FastMCP
 
 from . import tools as astrbot_tools
@@ -62,6 +65,21 @@ def main() -> None:
 
     By default this runs in stdio mode, which is what most MCP hosts expect.
     """
+    parser = argparse.ArgumentParser(prog="astrbot-mcp")
+    parser.add_argument(
+        "--version",
+        action="store_true",
+        help="Print package version and exit.",
+    )
+    args = parser.parse_args()
+
+    if args.version:
+        try:
+            print(version("astrbotmcp"))
+        except PackageNotFoundError:
+            print("unknown")
+        return
+
     server.run(transport="stdio")
 
 

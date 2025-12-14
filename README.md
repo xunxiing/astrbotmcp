@@ -16,6 +16,7 @@
 **本项目与 AstrBot 官方无直接关联，由社区独立维护。**
 
 ---
+
 ### 这个项目到底在干什么
 
 #### AstrBot 自身的 MCP 控制面
@@ -155,7 +156,6 @@ send_platform_message(
 
 ---
 
-
 ### 开发与贡献
 
 ```bash
@@ -174,4 +174,5 @@ uv run --project . astrbot-mcp
 
 ### 许可证
 
-MIT License - 详见 [LICENSE](LICENSE.txt) 文件
+MIT License - 详见 [LICENSE](LICENSE.txt) 文件。
+

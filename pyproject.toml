@@ -9,6 +9,12 @@ dependencies = [
     "httpx>=0.28.1",
 ]
 
+[project.optional-dependencies]
+test = [
+    "build>=1.2.2",
+    "pytest>=7.4",
+]
+
 [project.scripts]
 astrbot-mcp = "astrbot_mcp.server:main"
 
@@ -20,4 +26,6 @@ requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["astrbot_mcp"]
+
+[tool.setuptools.packages.find]
+include = ["astrbot_mcp*"]
