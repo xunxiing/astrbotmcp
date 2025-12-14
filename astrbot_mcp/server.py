@@ -26,6 +26,10 @@ server.tool(
     name="get_platform_session_messages",
 )
 server.tool(astrbot_tools.browse_plugin_market, name="browse_plugin_market")
+server.tool(astrbot_tools.list_astrbot_config_files, name="list_astrbot_config_files")
+server.tool(astrbot_tools.inspect_astrbot_config, name="inspect_astrbot_config")
+server.tool(astrbot_tools.apply_astrbot_config_ops, name="apply_astrbot_config_ops")
+server.tool(astrbot_tools.search_astrbot_config_paths, name="search_astrbot_config_paths")
 
 
 @server.resource("astrbot://info")
@@ -44,6 +48,10 @@ def astrbot_info():
             "restart_astrbot",
             "get_platform_session_messages",
             "browse_plugin_market",
+            "list_astrbot_config_files",
+            "inspect_astrbot_config",
+            "apply_astrbot_config_ops",
+            "search_astrbot_config_paths",
         ],
     }
 

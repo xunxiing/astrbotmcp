@@ -23,6 +23,10 @@ from .tools import (
     send_platform_message,
     restart_astrbot,
     get_platform_session_messages,
+    list_astrbot_config_files,
+    inspect_astrbot_config,
+    apply_astrbot_config_ops,
+    search_astrbot_config_paths,
     MessagePart,
 )
 
@@ -33,5 +37,9 @@ __all__ = [
     "send_platform_message",
     "restart_astrbot",
     "get_platform_session_messages",
+    "list_astrbot_config_files",
+    "inspect_astrbot_config",
+    "apply_astrbot_config_ops",
+    "search_astrbot_config_paths",
     "MessagePart",
 ]

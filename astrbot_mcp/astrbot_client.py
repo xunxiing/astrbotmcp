@@ -281,6 +281,48 @@ class AstrBotClient:
         response = await self._request("GET", "/api/config/platform/list")
         return response.json()
 
+    async def get_abconf_list(self) -> Dict[str, Any]:
+        """Call /api/config/abconfs and return the parsed JSON."""
+        response = await self._request("GET", "/api/config/abconfs")
+        return response.json()
+
+    async def get_abconf(
+        self,
+        *,
+        conf_id: str | None = None,
+        system_config: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Call /api/config/abconf and return the parsed JSON.
+
+        Args:
+            conf_id: Config file id to fetch.
+            system_config: If True, fetch system default config (AstrBot side expects system_config=1).
+        """
+        params: Dict[str, Any] = {}
+        if system_config:
+            params["system_config"] = "1"
+        if conf_id is not None:
+            params["id"] = conf_id
+        response = await self._request("GET", "/api/config/abconf", params=params or None)
+        return response.json()
+
+    async def update_astrbot_config(
+        self,
+        *,
+        conf_id: str,
+        config: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Update AstrBot core config via /api/config/astrbot/update (auto save + hot reload on AstrBot side).
+        """
+        payload: Dict[str, Any] = {
+            "conf_id": conf_id,
+            "config": config,
+        }
+        response = await self._request("POST", "/api/config/astrbot/update", json_body=payload)
+        return response.json()
+
     # ---- Plugin / market APIs ----------------------------------------
 
     async def get_plugin_market_list(

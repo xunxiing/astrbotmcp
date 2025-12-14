@@ -25,6 +25,12 @@ from .message_tools import (
 from .platform_tools import get_message_platforms
 from .session_tools import get_platform_session_messages
 from .plugin_market_tools import browse_plugin_market
+from .config_tools import (
+    list_astrbot_config_files,
+    inspect_astrbot_config,
+    apply_astrbot_config_ops,
+)
+from .config_search_tool import search_astrbot_config_paths
 
 # 导入类型定义
 from .types import MessagePart
@@ -48,6 +54,10 @@ __all__ = [
     "restart_astrbot",
     "get_platform_session_messages",
     "browse_plugin_market",
+    "list_astrbot_config_files",
+    "inspect_astrbot_config",
+    "apply_astrbot_config_ops",
+    "search_astrbot_config_paths",
     
     # 类型定义
     "MessagePart",
