@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from typing import Literal, TypedDict
+from typing import Literal
+try:
+    from typing import TypedDict  # type: ignore
+except ImportError:
+    from typing_extensions import TypedDict
 
 
 class MessagePart(TypedDict, total=False):
