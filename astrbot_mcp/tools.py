@@ -16,7 +16,7 @@ Example:
 """
 
 # 导入所有工具函数，保持向后兼容
-from .tools import (
+from . import (
     get_astrbot_logs,
     get_message_platforms,
     send_platform_message_direct,
