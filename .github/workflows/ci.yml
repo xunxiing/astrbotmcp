@@ -44,13 +44,14 @@ jobs:
 
       - name: Install built wheel and smoke-test
         run: |
-          python -m venv .venv-wheel
-          if [[ -x .venv-wheel/bin/python ]]; then
-            VENV_PY=.venv-wheel/bin/python
-          elif [[ -x .venv-wheel/Scripts/python.exe ]]; then
-            VENV_PY=.venv-wheel/Scripts/python.exe
+          VENV_DIR="$PWD/.venv-wheel"
+          python -m venv "$VENV_DIR"
+          if [[ -x "$VENV_DIR/bin/python" ]]; then
+            VENV_PY="$VENV_DIR/bin/python"
+          elif [[ -x "$VENV_DIR/Scripts/python.exe" ]]; then
+            VENV_PY="$VENV_DIR/Scripts/python.exe"
           else
-            VENV_PY=.venv-wheel/Scripts/python
+            VENV_PY="$VENV_DIR/Scripts/python"
           fi
 
           "$VENV_PY" -m pip install -U pip
@@ -60,8 +61,7 @@ jobs:
           pushd "$SMOKE_DIR" >/dev/null
           "$VENV_PY" -c "import astrbot_mcp.server, astrbot_mcp.tools; print('import-ok')"
 
-          CLI_PATH="$("$VENV_PY" -c "import shutil; print(shutil.which('astrbot-mcp') or '')")"
-          test -n "$CLI_PATH"
-          "$CLI_PATH" --version
-          "$CLI_PATH" --help >/dev/null
+          "$VENV_PY" -c "import shutil, sys; sys.exit(0 if shutil.which('astrbot-mcp') else 1)"
+          "$VENV_PY" -m astrbot_mcp.server --version
+          "$VENV_PY" -m astrbot_mcp.server --help >/dev/null
           popd >/dev/null
