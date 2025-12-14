@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import sys
 from typing import Literal
-try:
-    from typing import TypedDict  # type: ignore
-except ImportError:
+
+if sys.version_info < (3, 12):
     from typing_extensions import TypedDict
+else:
+    from typing import TypedDict
 
 
 class MessagePart(TypedDict, total=False):
