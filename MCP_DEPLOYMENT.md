@@ -81,6 +81,36 @@
       export ASTRBOT_DEFAULT_MODEL="your-model-id"
       ```
 
+    - 可选：`ASTRBOTMCP_DISABLE_PROXY`（默认 true），是否禁用代理，防止本地请求被代理拦截：
+
+      ```bash
+      # 默认值，推荐用于本地 AstrBot 实例
+      export ASTRBOTMCP_DISABLE_PROXY="true"
+
+      # 如果需要使用代理（可能导致本地 API 请求失败）
+      export ASTRBOTMCP_DISABLE_PROXY="false"
+      ```
+
+#### 代理配置说明
+
+如果你在使用代理工具（如 Clash、V2Ray 等），可能会遇到 502 Bad Gateway 错误，这是因为本地请求被代理拦截导致的。
+
+**解决方案：**
+
+1. **默认行为**：AstrBot MCP 默认禁用代理（`ASTRBOTMCP_DISABLE_PROXY=true`），确保本地请求直接发送到 AstrBot。
+
+2. **如果需要使用代理**：设置 `ASTRBOTMCP_DISABLE_PROXY=false`，但请注意这可能导致本地 API 请求失败。
+
+3. **推荐配置**：对于本地 AstrBot 实例，始终禁用代理。在 Windows PowerShell 中可以这样设置：
+
+   ```powershell
+   $env:ASTRBOT_BASE_URL = "http://127.0.0.1:8000"
+   $env:ASTRBOT_TIMEOUT = "30"
+   $env:ASTRBOT_DEFAULT_PROVIDER = "your-provider-id"
+   $env:ASTRBOT_DEFAULT_MODEL = "your-model-id"
+   $env:ASTRBOTMCP_DISABLE_PROXY = "true"  # 确保本地请求不经过代理
+   ```
+
     在 Windows PowerShell 中可以使用：
 
     ```powershell

@@ -98,7 +98,11 @@ class AstrBotClient:
             pwd = hashlib.md5(pwd.encode("utf-8")).hexdigest()
 
         url = f"{self.base_url}/api/auth/login"
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        client_kwargs = {"timeout": self.timeout}
+        if self.settings.disable_proxy:
+            client_kwargs["trust_env"] = False  # 禁用代理，忽略环境变量设置
+
+        async with httpx.AsyncClient(**client_kwargs) as client:
             resp = await client.post(
                 url,
                 json={"username": username, "password": pwd},
@@ -142,7 +146,11 @@ class AstrBotClient:
         auth_headers = await self._get_auth_headers()
         headers = {**headers, **auth_headers}
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        client_kwargs = {"timeout": self.timeout}
+        if self.settings.disable_proxy:
+            client_kwargs["trust_env"] = False  # 禁用代理，忽略环境变量设置
+
+        async with httpx.AsyncClient(**client_kwargs) as client:
             if stream:
                 return await client.build_request(method, url, params=params, json=json_body, files=files)  # type: ignore[return-value]
             response = await client.request(
@@ -181,7 +189,11 @@ class AstrBotClient:
 
         headers = await self._get_auth_headers()
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        client_kwargs = {"timeout": self.timeout}
+        if self.settings.disable_proxy:
+            client_kwargs["trust_env"] = False  # 禁用代理，忽略环境变量设置
+
+        async with httpx.AsyncClient(**client_kwargs) as client:
             async with client.stream(
                 method,
                 url,
@@ -451,7 +463,11 @@ class AstrBotClient:
             }
             url = f"{self.base_url}/api/chat/post_file"
             headers = await self._get_auth_headers()
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            client_kwargs = {"timeout": self.timeout}
+            if self.settings.disable_proxy:
+                client_kwargs["trust_env"] = False  # 禁用代理，忽略环境变量设置
+
+            async with httpx.AsyncClient(**client_kwargs) as client:
                 response = await client.post(url, files=files, headers=headers)
                 response.raise_for_status()
                 return response.json()
@@ -471,10 +487,14 @@ class AstrBotClient:
         """
         temp_path: str | None = None
         try:
-            async with httpx.AsyncClient(
-                timeout=self.timeout,
-                follow_redirects=True,
-            ) as http_client:
+            client_kwargs = {
+                "timeout": self.timeout,
+                "follow_redirects": True
+            }
+            if self.settings.disable_proxy:
+                client_kwargs["trust_env"] = False  # 禁用代理，忽略环境变量设置
+
+            async with httpx.AsyncClient(**client_kwargs) as http_client:
                 async with http_client.stream("GET", url) as response:
                     response.raise_for_status()
 

@@ -79,6 +79,37 @@ uv add astrbotmcp
 | `ASTRBOT_USERNAME` | Dashboard 用户名 | - |
 | `ASTRBOT_PASSWORD` | Dashboard 密码 | - |
 | `ASTRBOT_LOG_LEVEL` | 日志级别 | `INFO` |
+| `ASTRBOTMCP_DISABLE_PROXY` | 是否禁用代理（防止本地请求被代理拦截） | `true` |
+
+#### 代理配置说明
+
+如果你在使用代理工具（如 Clash、V2Ray 等），可能会遇到 502 Bad Gateway 错误，这是因为本地请求被代理拦截导致的。
+
+**解决方案：**
+
+1. **默认行为**：AstrBot MCP 默认禁用代理（`ASTRBOTMCP_DISABLE_PROXY=true`），确保本地请求直接发送到 AstrBot。
+
+2. **如果需要使用代理**：设置 `ASTRBOTMCP_DISABLE_PROXY=false`，但请注意这可能导致本地 API 请求失败。
+
+3. **推荐配置**：对于本地 AstrBot 实例，始终禁用代理：
+```json
+{
+  "mcpServers": {
+    "astrbot-mcp": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "astrbotmcp",
+        "astrbot-mcp"
+      ],
+      "env": {
+        "ASTRBOT_BASE_URL": "http://127.0.0.1:6185",
+        "ASTRBOTMCP_DISABLE_PROXY": "true"
+      }
+    }
+  }
+}
+```
 
 ---
 

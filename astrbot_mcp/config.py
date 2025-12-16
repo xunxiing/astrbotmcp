@@ -16,6 +16,7 @@ class AstrBotSettings:
     default_model: str | None = None
     file_root: str | None = None
     direct_media_mode: str | None = None
+    disable_proxy: bool = True  # 默认禁用代理，防止本地请求被代理拦截
 
 
 def _get_env(name: str) -> str | None:
@@ -72,6 +73,12 @@ def get_settings() -> AstrBotSettings:
         "ASTRBOT_MCP_DIRECT_MEDIA_MODE"
     )
 
+    # 默认禁用代理，除非明确设置为false
+    disable_proxy_str = _get_env("ASTRBOTMCP_DISABLE_PROXY")
+    disable_proxy = True  # 默认值
+    if disable_proxy_str is not None:
+        disable_proxy = disable_proxy_str.lower() not in ("false", "0", "no", "n")
+
     return AstrBotSettings(
         base_url=base_url,
         timeout=timeout,
@@ -81,4 +88,5 @@ def get_settings() -> AstrBotSettings:
         default_model=default_model,
         file_root=file_root,
         direct_media_mode=direct_media_mode,
+        disable_proxy=disable_proxy,
     )
