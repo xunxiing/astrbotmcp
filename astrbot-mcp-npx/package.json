@@ -18,7 +18,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/xunxiing/astrbot-mcp.git"
+    "url": "git+https://github.com/xunxiing/astrbot-mcp.git"
   },
   "bugs": {
     "url": "https://github.com/xunxiing/astrbot-mcp/issues"
@@ -26,6 +26,9 @@
   "homepage": "https://github.com/xunxiing/astrbot-mcp#readme",
   "engines": {
     "node": ">=18.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "files": [
     "bin/",
