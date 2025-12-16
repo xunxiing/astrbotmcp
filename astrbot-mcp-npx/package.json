@@ -1,0 +1,35 @@
+{
+  "name": "@xunxiing/astrbot-mcp",
+  "version": "0.1.0",
+  "description": "AstrBot MCP server - Bridge AstrBot with MCP clients for seamless integration",
+  "type": "module",
+  "bin": {
+    "astrbot-mcp": "bin/astrbot-mcp.js"
+  },
+  "keywords": [
+    "astrbot",
+    "mcp",
+    "model-context-protocol",
+    "ai",
+    "chatbot",
+    "bridge"
+  ],
+  "author": "xunxiing",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xunxiing/astrbot-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/xunxiing/astrbot-mcp/issues"
+  },
+  "homepage": "https://github.com/xunxiing/astrbot-mcp#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "bin/",
+    "README.md",
+    "LICENSE.txt"
+  ]
+}

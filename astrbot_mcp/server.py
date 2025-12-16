@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import sys
 from importlib.metadata import PackageNotFoundError, version
 
 from fastmcp.server import FastMCP
@@ -80,7 +82,17 @@ def main() -> None:
             print("unknown")
         return
 
-    server.run(transport="stdio")
+    # Codex MCP client is strict about stdio: stdout must be pure JSON-RPC.
+    # Disable FastMCP's banner and keep logs quiet/UTF-8 to avoid handshake failures.
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    os.environ.setdefault("PYTHONUTF8", "1")
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
+    server.run(transport="stdio", show_banner=False, log_level="ERROR")
 
 
 if __name__ == "__main__":
