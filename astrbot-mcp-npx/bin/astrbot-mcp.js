@@ -29,16 +29,12 @@ function findProjectRoot(startDir) {
   return null;
 }
 
-// When executed via `npx`, this script may run from a temp install directory.
-// Prefer an explicit env var, otherwise infer from process.cwd().
-const projectRoot =
-  (process.env.ASTRBOT_MCP_PROJECT_ROOT &&
-    resolve(process.env.ASTRBOT_MCP_PROJECT_ROOT)) ||
-  findProjectRoot(process.cwd()) ||
-  process.cwd();
+// Dev mode: if you're running inside this repo, use the repo root as `--project`.
+// Otherwise (typical `npx` usage), run the Python CLI from PyPI via uv/uvx.
+const repoRoot = findProjectRoot(process.cwd());
 
 const spawnOptions = {
-  cwd: projectRoot,
+  cwd: repoRoot || process.cwd(),
   env: {
     ...process.env,
     PYTHONUTF8: "1",
@@ -57,7 +53,7 @@ function spawnPythonViaUv() {
     [
       "run",
       "--project",
-      projectRoot,
+      repoRoot,
       "-q",
       "--no-progress",
       "--color",
@@ -70,14 +66,24 @@ function spawnPythonViaUv() {
   );
 }
 
+function spawnPythonViaUvx() {
+  return spawn("uvx", ["--from", "astrbotmcp", "astrbot-mcp"], spawnOptions);
+}
+
+function spawnPythonViaUvToolRun() {
+  return spawn("uv", ["tool", "run", "--from", "astrbotmcp", "astrbot-mcp"], spawnOptions);
+}
+
 function pythonCandidates() {
   const candidates = [];
   if (process.env.ASTRBOT_MCP_PYTHON) {
     candidates.push({ command: process.env.ASTRBOT_MCP_PYTHON, args: ["-m", "astrbot_mcp.server"] });
   }
-  const venvPython = resolve(projectRoot, ".venv", "Scripts", "python.exe");
-  if (fs.existsSync(venvPython)) {
-    candidates.push({ command: venvPython, args: ["-m", "astrbot_mcp.server"] });
+  if (repoRoot) {
+    const venvPython = resolve(repoRoot, ".venv", "Scripts", "python.exe");
+    if (fs.existsSync(venvPython)) {
+      candidates.push({ command: venvPython, args: ["-m", "astrbot_mcp.server"] });
+    }
   }
   candidates.push({ command: "python", args: ["-m", "astrbot_mcp.server"] });
   candidates.push({ command: "py", args: ["-3", "-m", "astrbot_mcp.server"] });
@@ -112,20 +118,49 @@ function spawnPythonDirectlyWithFallback(fromIndex = 0) {
   return proc;
 }
 
-// Prefer uv (reproducible env), but fall back to plain python if uv isn't on PATH.
-let child = spawnPythonViaUv();
-child.on("error", (err) => {
-  if (err && err.code === "ENOENT") {
-    child = spawnPythonDirectlyWithFallback(0);
-    if (!child) {
-      console.error("[npx-wrapper] Failed to find a usable Python interpreter.");
-      process.exit(1);
-    }
-    child.on("exit", (code) => process.exit(code ?? 1));
-    return;
-  }
-  console.error(`[npx-wrapper] Failed to spawn process: ${err.message}`);
-  process.exit(1);
-});
+let child = null;
 
-child.on("exit", (code) => process.exit(code ?? 1));
+// Repo/dev mode: prefer `uv run --project <repoRoot> ...` for reproducible env.
+// User mode: prefer `uvx --from astrbotmcp astrbot-mcp`, then fallback to `uv tool run ...`.
+if (repoRoot) {
+  child = spawnPythonViaUv();
+  child.on("error", (err) => {
+    if (err && err.code === "ENOENT") {
+      child = spawnPythonDirectlyWithFallback(0);
+      if (!child) {
+        console.error("[npx-wrapper] Failed to find a usable Python interpreter.");
+        process.exit(1);
+      }
+      child.on("exit", (code) => process.exit(code ?? 1));
+      return;
+    }
+    console.error(`[npx-wrapper] Failed to spawn process: ${err.message}`);
+    process.exit(1);
+  });
+  child.on("exit", (code) => process.exit(code ?? 1));
+} else {
+  child = spawnPythonViaUvx();
+  child.on("error", (err) => {
+    if (err && err.code === "ENOENT") {
+      child = spawnPythonViaUvToolRun();
+      child.on("error", (err2) => {
+        if (err2 && err2.code === "ENOENT") {
+          child = spawnPythonDirectlyWithFallback(0);
+          if (!child) {
+            console.error("[npx-wrapper] Failed to find a usable Python interpreter.");
+            process.exit(1);
+          }
+          child.on("exit", (code) => process.exit(code ?? 1));
+          return;
+        }
+        console.error(`[npx-wrapper] Failed to spawn process: ${err2.message}`);
+        process.exit(1);
+      });
+      child.on("exit", (code) => process.exit(code ?? 1));
+      return;
+    }
+    console.error(`[npx-wrapper] Failed to spawn process: ${err.message}`);
+    process.exit(1);
+  });
+  child.on("exit", (code) => process.exit(code ?? 1));
+}

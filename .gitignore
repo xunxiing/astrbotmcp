@@ -41,3 +41,6 @@ htmlcov/
 
 # Roo configuration
 .roo/
+
+# Codex configuration (local)
+.codex/
