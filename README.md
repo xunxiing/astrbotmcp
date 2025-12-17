@@ -37,6 +37,9 @@
 
 #### 安装
 
+<details>
+<summary>通过 PyPI 或 uv 安装</summary>
+
 ```bash
 # 通过 PyPI 安装（推荐）
 pip install astrbotmcp
@@ -45,9 +48,7 @@ pip install astrbotmcp
 uv add astrbotmcp
 ```
 
-#### MCP 客户端配置
-
-在 Cursor、Cline、Claude Desktop 等支持 MCP 的客户端中配置：
+安装完成后，您可以通过以下方式在 MCP 客户端中配置：
 
 ```json
 {
@@ -69,6 +70,41 @@ uv add astrbotmcp
   }
 }
 ```
+
+</details>
+
+<details>
+<summary>通过 npm 安装（需要先安装 npm）</summary>
+
+> 注意：npm 安装方式需要您先在系统中安装 Node.js 和 npm。
+
+```bash
+# 通过 npm 安装
+npm install -g astrbotmcp
+```
+
+安装完成后，您可以通过以下方式在 MCP 客户端中配置：
+
+```json
+{
+  "mcpServers": {
+    "astrbot-mcp": {
+      "command": "npx",
+      "args": [
+        "astrbotmcp"
+      ],
+      "env": {
+        "ASTRBOT_BASE_URL": "http://127.0.0.1:6185",
+        "ASTRBOT_TIMEOUT": "30",
+        "ASTRBOT_USERNAME": "your_username",
+        "ASTRBOT_PASSWORD": "your_password"
+      }
+    }
+  }
+}
+```
+
+</details>
 
 #### 环境变量说明
 
