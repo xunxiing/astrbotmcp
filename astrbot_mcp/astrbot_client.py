@@ -293,6 +293,29 @@ class AstrBotClient:
         response = await self._request("GET", "/api/config/platform/list")
         return response.json()
 
+    async def get_umo_abconf_routes(self) -> Dict[str, Any]:
+        """Call /api/config/umo_abconf_routes and return the parsed JSON."""
+        response = await self._request("GET", "/api/config/umo_abconf_routes")
+        return response.json()
+
+    async def update_umo_abconf_route(
+        self,
+        *,
+        umo: str,
+        conf_id: str,
+    ) -> Dict[str, Any]:
+        """Update UMOP config routing via POST /api/config/umo_abconf_route/update."""
+        payload: Dict[str, Any] = {
+            "umo": umo,
+            "conf_id": conf_id,
+        }
+        response = await self._request(
+            "POST",
+            "/api/config/umo_abconf_route/update",
+            json_body=payload,
+        )
+        return response.json()
+
     async def get_abconf_list(self) -> Dict[str, Any]:
         """Call /api/config/abconfs and return the parsed JSON."""
         response = await self._request("GET", "/api/config/abconfs")
@@ -333,6 +356,39 @@ class AstrBotClient:
             "config": config,
         }
         response = await self._request("POST", "/api/config/astrbot/update", json_body=payload)
+        return response.json()
+
+    async def list_session_rules(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 100,
+        search: str | None = None,
+    ) -> Dict[str, Any]:
+        """Call /api/session/list-rule (dashboard API) and return the parsed JSON."""
+        params: Dict[str, Any] = {
+            "page": page,
+            "page_size": page_size,
+        }
+        if search:
+            params["search"] = search
+        response = await self._request("GET", "/api/session/list-rule", params=params)
+        return response.json()
+
+    async def update_session_rule(
+        self,
+        *,
+        umo: str,
+        rule_key: str,
+        rule_value: Any,
+    ) -> Dict[str, Any]:
+        """Call POST /api/session/update-rule to persist a UMO rule."""
+        payload: Dict[str, Any] = {
+            "umo": umo,
+            "rule_key": rule_key,
+            "rule_value": rule_value,
+        }
+        response = await self._request("POST", "/api/session/update-rule", json_body=payload)
         return response.json()
 
     # ---- Plugin / market APIs ----------------------------------------

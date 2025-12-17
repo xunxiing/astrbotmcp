@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import os
-from typing import Any, Dict, List, Literal, Optional, TypedDict
+import textwrap
+from typing import Any, Dict, List, Literal, Optional, Tuple, TypedDict
 
 from ..astrbot_client import AstrBotClient
 from .helpers import (
@@ -14,6 +15,124 @@ from .helpers import (
     _resolve_local_file_path,
 )
 from .types import MessagePart
+
+
+_SESSION_CACHE_LOCK = asyncio.Lock()
+_SESSION_CACHE: Dict[Tuple[str, str, str], str] = {}
+
+_LAST_SAVED_MESSAGE_ID_LOCK = asyncio.Lock()
+_LAST_SAVED_MESSAGE_ID_BY_SESSION: Dict[Tuple[str, str, str], str] = {}
+
+
+def _session_cache_key(client: AstrBotClient, platform_id: str) -> Tuple[str, str, str]:
+    return (client.base_url, client.settings.username or "", platform_id)
+
+
+def _last_saved_key(client: AstrBotClient, session_id: str) -> Tuple[str, str, str]:
+    return (client.base_url, client.settings.username or "", session_id)
+
+
+def _extract_plain_text_from_history_item(item: Dict[str, Any]) -> str:
+    content = item.get("content") or {}
+    if not isinstance(content, dict):
+        return str(content)
+    message = content.get("message") or []
+    if not isinstance(message, list):
+        return str(message)
+
+    chunks: List[str] = []
+    for part in message:
+        if not isinstance(part, dict):
+            continue
+        p_type = part.get("type")
+        if p_type == "plain":
+            txt = part.get("text")
+            if isinstance(txt, str) and txt:
+                chunks.append(txt)
+        elif p_type in ("image", "file", "record", "video"):
+            name = part.get("filename") or part.get("attachment_id") or ""
+            if name:
+                chunks.append(f"[{p_type}:{name}]")
+            else:
+                chunks.append(f"[{p_type}]")
+        else:
+            if p_type:
+                chunks.append(f"[{p_type}]")
+    return "".join(chunks).strip()
+
+
+def _format_quote_block(*, message_id: str, sender: str, text: str) -> str:
+    sender = (sender or "unknown").strip() or "unknown"
+    text = (text or "").strip()
+    if not text:
+        text = "<empty>"
+    text = textwrap.shorten(text, width=800, placeholder="…")
+    return f"[引用消息 {message_id} | {sender}] {text}\n"
+
+
+async def _resolve_webchat_quotes(
+    client: AstrBotClient, *, session_id: str, reply_ids: List[str]
+) -> Tuple[str, Dict[str, Any]]:
+    """
+    Resolve WebChat `message_saved.id` -> quoted text by calling /api/chat/get_session.
+    Best-effort: returns a quote prefix text and debug info.
+    """
+    cleaned: List[str] = []
+    for rid in reply_ids:
+        s = str(rid).strip()
+        if s:
+            cleaned.append(s)
+    if not cleaned:
+        return "", {"resolved": {}, "missing": []}
+
+    try:
+        resp = await client.get_platform_session(session_id=session_id)
+    except Exception as e:
+        return "", {"error": str(e), "resolved": {}, "missing": cleaned}
+
+    if resp.get("status") != "ok":
+        return "", {"status": resp.get("status"), "message": resp.get("message"), "raw": resp}
+
+    data = resp.get("data") or {}
+    history = data.get("history") or []
+    if not isinstance(history, list):
+        return "", {"resolved": {}, "missing": cleaned, "raw_history_type": str(type(history))}
+
+    index: Dict[str, Dict[str, Any]] = {}
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        mid = item.get("id")
+        if mid is None:
+            continue
+        index[str(mid)] = item
+
+    resolved: Dict[str, str] = {}
+    missing: List[str] = []
+    blocks: List[str] = []
+    for rid in cleaned:
+        item = index.get(str(rid))
+        if not item:
+            missing.append(rid)
+            blocks.append(
+                _format_quote_block(
+                    message_id=str(rid),
+                    sender="missing",
+                    text="<not found in /api/chat/get_session history>",
+                )
+            )
+            continue
+        sender = (
+            item.get("sender_name")
+            or item.get("sender_id")
+            or "unknown"
+        )
+        txt = _extract_plain_text_from_history_item(item)
+        block = _format_quote_block(message_id=str(rid), sender=str(sender), text=txt)
+        resolved[str(rid)] = block
+        blocks.append(block)
+
+    return "".join(blocks), {"resolved": resolved, "missing": missing}
 
 
 async def send_platform_message_direct(
@@ -28,6 +147,11 @@ async def send_platform_message_direct(
     message_type: Literal["GroupMessage", "FriendMessage"] = "GroupMessage",
 ) -> Dict[str, Any]:
     """
+    NOTE:
+      - If you provide `target_id`, this tool will call AstrBot dashboard API `/api/platform/send_message`
+        (bypass LLM) to send to a real group/user.
+      - If you do NOT provide `target_id`, this tool uses AstrBot WebChat `/api/chat/send` (LLM required),
+        and will always create/reuse a `webchat` session even if you pass another platform_id.
     Directly send a message chain to a platform group/user (bypass LLM).
 
     This calls AstrBot dashboard endpoint: POST /api/platform/send_message
@@ -201,15 +325,26 @@ async def send_platform_message_direct(
                 message_chain=normalized_chain,
             )
         except Exception as e:
+            status_code = getattr(getattr(e, "response", None), "status_code", None)
+            hint = "Ensure AstrBot includes /api/platform/send_message and you are authenticated."
+            if status_code in (404, 405):
+                hint = (
+                    "Your AstrBot may not expose /api/platform/send_message (some versions only provide "
+                    "/api/platform/stats and /api/platform/webhook). Upgrade AstrBot or add an HTTP route for sending."
+                )
             return {
                 "status": "error",
-                "message": f"AstrBot API error: {e.response.status_code if hasattr(e, 'response') else 'Unknown'}",
+                "message": (
+                    f"AstrBot API error: HTTP {status_code}"
+                    if status_code is not None
+                    else f"AstrBot API error: {e}"
+                ),
                 "platform_id": platform_id,
                 "session_id": str(target_id),
                 "message_type": message_type,
                 "attempt_mode": attempt_mode,
                 "detail": _httpx_error_detail(e),
-                "hint": "Ensure AstrBot includes /api/platform/send_message and you are authenticated.",
+                "hint": hint,
             }
 
         status = direct_resp.get("status")
@@ -251,7 +386,14 @@ async def send_platform_message(
     files: Optional[List[str]] = None,
     videos: Optional[List[str]] = None,
     records: Optional[List[str]] = None,
+    target_id: Optional[str] = None,
+    message_type: Literal["GroupMessage", "FriendMessage"] = "GroupMessage",
     session_id: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+    use_last_session: bool = True,
+    new_session: bool = False,
+    reply_to_message_id: Optional[str] = None,
+    reply_to_last_saved_message: bool = False,
     selected_provider: Optional[str] = None,
     selected_model: Optional[str] = None,
     enable_streaming: bool = True,
@@ -272,6 +414,26 @@ async def send_platform_message(
     """
     client = AstrBotClient.from_env()
 
+    if target_id:
+        direct_result = await send_platform_message_direct(
+            platform_id=platform_id,
+            target_id=str(target_id),
+            message_chain=message_chain,
+            message=message,
+            images=images,
+            files=files,
+            videos=videos,
+            records=records,
+            message_type=message_type,
+        )
+        if isinstance(direct_result, dict):
+            direct_result.setdefault("mode", "direct")
+        return direct_result
+
+    mode = "webchat"
+    session_platform_id = "webchat"
+    routing_debug: Dict[str, Any] = {}
+
     if message_chain is None:
         message_chain = []
         if message:
@@ -286,15 +448,37 @@ async def send_platform_message(
             message_chain.append({"type": "video", "file_path": src})
 
     # 1. 确保有 session_id
-    used_session_id = session_id
-    if not used_session_id:
+    explicit_session_id = session_id or conversation_id
+    used_session_id: str | None = None
+    session_reused = False
+
+    if (
+        explicit_session_id
+        and isinstance(explicit_session_id, str)
+        and explicit_session_id.strip()
+    ):
+        used_session_id = explicit_session_id.strip()
+        async with _SESSION_CACHE_LOCK:
+            _SESSION_CACHE[_session_cache_key(client, session_platform_id)] = used_session_id
+    elif use_last_session and not new_session:
+        async with _SESSION_CACHE_LOCK:
+            cached = _SESSION_CACHE.get(_session_cache_key(client, session_platform_id))
+        if cached:
+            used_session_id = cached
+            session_reused = True
+
+    if new_session or not used_session_id:
         try:
-            session_resp = await client.create_platform_session(platform_id=platform_id)
+            session_resp = await client.create_platform_session(
+                platform_id=session_platform_id
+            )
         except Exception as e:
             return {
                 "status": "error",
                 "message": f"AstrBot API error: {e.response.status_code if hasattr(e, 'response') else 'Unknown'}",
-                "platform_id": platform_id,
+                "mode": mode,
+                "platform_id": session_platform_id,
+                "requested_platform_id": platform_id,
                 "base_url": client.base_url,
                 "detail": _httpx_error_detail(e),
             }
@@ -312,9 +496,137 @@ async def send_platform_message(
                 "message": "Failed to create platform session: missing session_id",
                 "raw": session_resp,
             }
+        used_session_id = str(used_session_id)
+        async with _SESSION_CACHE_LOCK:
+            _SESSION_CACHE[_session_cache_key(client, session_platform_id)] = used_session_id
+        session_reused = False
+
+    used_session_id = str(used_session_id)
+
+    if client.settings.username:
+        username = client.settings.username.strip() or "astrbot"
+        umo = f"webchat:FriendMessage:webchat!{username}!{used_session_id}"
+        routing_debug["umo"] = umo
+
+        # 1) Ensure UMO -> abconf route exists (the dashboard does this automatically).
+        try:
+            ucr_resp = await client.get_umo_abconf_routes()
+            routing_debug["ucr_get"] = ucr_resp if ucr_resp.get("status") != "ok" else None
+            if ucr_resp.get("status") == "ok":
+                routing = (ucr_resp.get("data") or {}).get("routing") or {}
+                if isinstance(routing, dict):
+                    if umo in routing:
+                        routing_debug["ucr_has_route"] = True
+                    else:
+                        routing_debug["ucr_has_route"] = False
+                        prefix = f"webchat:FriendMessage:webchat!{username}!"
+                        conf_id: str | None = None
+                        for k, v in routing.items():
+                            if isinstance(k, str) and k.startswith(prefix):
+                                conf_id = str(v)
+                                break
+
+                        if not conf_id:
+                            abconfs = await client.get_abconf_list()
+                            info_list = (abconfs.get("data") or {}).get("info_list") or []
+                            if isinstance(info_list, list):
+                                # Prefer an active/current config if present.
+                                for item in info_list:
+                                    if not isinstance(item, dict):
+                                        continue
+                                    if item.get("active") or item.get("current") or item.get("is_current"):
+                                        cid = item.get("id") or item.get("conf_id")
+                                        if cid:
+                                            conf_id = str(cid)
+                                            break
+                                if not conf_id:
+                                    for item in info_list:
+                                        if not isinstance(item, dict):
+                                            continue
+                                        cid = item.get("id") or item.get("conf_id")
+                                        if cid:
+                                            conf_id = str(cid)
+                                            break
+                            routing_debug["abconf_pick"] = conf_id
+
+                        if conf_id:
+                            upd = await client.update_umo_abconf_route(umo=umo, conf_id=conf_id)
+                            routing_debug["ucr_update"] = upd
+        except Exception as e:
+            routing_debug["ucr_exception"] = str(e)
+
+        # 2) Copy provider_perf rule from an existing webchat UMO (avoids "no provider supported" on fresh sessions).
+        try:
+            rules_resp = await client.list_session_rules(
+                page=1, page_size=100, search=f"webchat!{username}!"
+            )
+            routing_debug["session_rules_get"] = (
+                rules_resp if rules_resp.get("status") != "ok" else None
+            )
+            if rules_resp.get("status") == "ok":
+                data = rules_resp.get("data") or {}
+                rules_list = data.get("rules") or []
+                if isinstance(rules_list, list):
+                    source_umo = None
+                    source_key = None
+                    source_val = None
+                    for item in rules_list:
+                        if not isinstance(item, dict):
+                            continue
+                        rules = item.get("rules") or {}
+                        if not isinstance(rules, dict):
+                            continue
+                        for k, v in rules.items():
+                            if isinstance(k, str) and k.startswith("provider_perf_") and "chat" in k:
+                                source_umo = item.get("umo")
+                                source_key = k
+                                source_val = v
+                                break
+                        if source_key:
+                            break
+
+                    if source_key and source_val is not None:
+                        upd = await client.update_session_rule(
+                            umo=umo, rule_key=source_key, rule_value=source_val
+                        )
+                        routing_debug["provider_rule_copied_from"] = source_umo
+                        routing_debug["provider_rule_key"] = source_key
+                        routing_debug["provider_rule_update"] = upd
+        except Exception as e:
+            routing_debug["session_rules_exception"] = str(e)
+    else:
+        routing_debug["skipped"] = "No ASTRBOT_USERNAME configured; cannot mirror dashboard session routing."
+
+    if reply_to_last_saved_message and not reply_to_message_id:
+        async with _LAST_SAVED_MESSAGE_ID_LOCK:
+            reply_to_message_id = _LAST_SAVED_MESSAGE_ID_BY_SESSION.get(
+                _last_saved_key(client, used_session_id)
+            )
 
     # 2. 把 message_chain 转成 AstrBot chat/send 需要的 message_parts
+    reply_ids: List[str] = []
+    if reply_to_message_id:
+        reply_ids.append(str(reply_to_message_id))
+
+    for part in message_chain:
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") in ("reply", "quote", "reference"):
+            msg_id = part.get("message_id") or part.get("id")
+            if msg_id:
+                reply_ids.append(str(msg_id))
+
+    quote_prefix = ""
+    quote_debug: Dict[str, Any] | None = None
+    if reply_ids:
+        quote_prefix, quote_debug = await _resolve_webchat_quotes(
+            client, session_id=used_session_id, reply_ids=reply_ids
+        )
+
     message_parts: List[Dict[str, Any]] = []
+    if quote_prefix:
+        message_parts.append({"type": "plain", "text": quote_prefix})
+
     uploaded_attachments: List[Dict[str, Any]] = []
 
     for part in message_chain:
@@ -323,10 +635,8 @@ async def send_platform_message(
         if p_type == "plain":
             text = part.get("text", "")
             message_parts.append({"type": "plain", "text": text})
-        elif p_type == "reply":
-            msg_id = part.get("message_id")
-            if msg_id:
-                message_parts.append({"type": "reply", "message_id": msg_id})
+        elif p_type in ("reply", "quote", "reference"):
+            continue
         elif p_type in ("image", "file", "record", "video"):
             file_path = part.get("file_path")
             url = part.get("url")
@@ -428,11 +738,25 @@ async def send_platform_message(
         return {
             "status": "error",
             "message": "message_chain did not produce any valid message parts",
+            "mode": mode,
+            "platform_id": session_platform_id,
+            "requested_platform_id": platform_id,
+            "quote_debug": quote_debug,
+            "routing_debug": routing_debug,
         }
 
     # 3. 调用 /api/chat/send 并消费 SSE 回复
-    effective_provider = selected_provider or client.settings.default_provider
-    effective_model = selected_model or client.settings.default_model
+    # Mirror dashboard behavior: prefer session rules and UMO routing.
+    # If we cannot infer/copy provider rules for a brand-new session, fall back to env defaults.
+    effective_provider = selected_provider
+    effective_model = selected_model
+    if (
+        effective_provider is None
+        and effective_model is None
+        and not routing_debug.get("provider_rule_key")
+    ):
+        effective_provider = client.settings.default_provider
+        effective_model = client.settings.default_model
 
     try:
         events = await client.send_chat_message_sse(
@@ -443,10 +767,17 @@ async def send_platform_message(
             enable_streaming=enable_streaming,
         )
     except Exception as e:
+        status_code = getattr(getattr(e, "response", None), "status_code", None)
         return {
             "status": "error",
-            "message": f"AstrBot API error: {e.response.status_code if hasattr(e, 'response') else 'Unknown'}",
-            "platform_id": platform_id,
+            "message": (
+                f"AstrBot API error: HTTP {status_code}"
+                if status_code is not None
+                else f"AstrBot API error: {e}"
+            ),
+            "mode": mode,
+            "platform_id": session_platform_id,
+            "requested_platform_id": platform_id,
             "session_id": used_session_id,
             "selected_provider": effective_provider,
             "selected_model": effective_model,
@@ -456,46 +787,65 @@ async def send_platform_message(
                 "If you see 'has no provider supported' in AstrBot logs, "
                 "set selected_provider/selected_model (or env ASTRBOT_DEFAULT_PROVIDER/ASTRBOT_DEFAULT_MODEL)."
             ),
-        }
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": str(e),
-            "platform_id": platform_id,
-            "session_id": used_session_id,
-            "selected_provider": effective_provider,
-            "selected_model": effective_model,
-            "request_message_parts": message_parts,
+            "quote_debug": quote_debug,
+            "routing_debug": routing_debug,
         }
 
     # 简单聚合文本回复（仅供参考，保留原始事件）
     reply_text_chunks: List[str] = []
+    saved_message_ids: List[str] = []
     if not events:
         return {
             "status": "error",
             "message": "AstrBot returned no SSE events for /api/chat/send",
-            "platform_id": platform_id,
+            "mode": mode,
+            "platform_id": session_platform_id,
+            "requested_platform_id": platform_id,
             "session_id": used_session_id,
             "selected_provider": effective_provider,
             "selected_model": effective_model,
             "request_message_parts": message_parts,
             "hint": "Check AstrBot logs for the root cause (often provider/model config).",
+            "quote_debug": quote_debug,
+            "routing_debug": routing_debug,
         }
 
     for ev in events:
+        if ev.get("type") == "message_saved":
+            data = ev.get("data") or {}
+            saved_id = data.get("id")
+            if saved_id is not None:
+                saved_message_ids.append(str(saved_id))
         if ev.get("type") in ("plain", "complete"):
             data = ev.get("data")
             if isinstance(data, str):
                 reply_text_chunks.append(data)
 
+    last_saved_message_id: str | None = (
+        saved_message_ids[-1] if saved_message_ids else None
+    )
+    if last_saved_message_id:
+        async with _LAST_SAVED_MESSAGE_ID_LOCK:
+            _LAST_SAVED_MESSAGE_ID_BY_SESSION[_last_saved_key(client, used_session_id)] = (
+                last_saved_message_id
+            )
+
     return {
         "status": "ok",
-        "platform_id": platform_id,
+        "mode": mode,
+        "platform_id": session_platform_id,
+        "requested_platform_id": platform_id,
         "session_id": used_session_id,
+        "conversation_id": used_session_id,
+        "session_reused": session_reused,
         "selected_provider": effective_provider,
         "selected_model": effective_model,
         "request_message_parts": message_parts,
         "uploaded_attachments": uploaded_attachments,
         "reply_events": events,
         "reply_text": "".join(reply_text_chunks),
+        "saved_message_ids": saved_message_ids,
+        "last_saved_message_id": last_saved_message_id,
+        "quote_debug": quote_debug,
+        "routing_debug": routing_debug,
     }
