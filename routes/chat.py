@@ -288,6 +288,7 @@ class ChatRoute(Route):
 
         # 构建用户消息段（包含 path 用于传递给 adapter）
         message_parts = await self._build_user_message_parts(message)
+        user_record = None
 
         async def stream():
             client_disconnected = False
@@ -296,6 +297,20 @@ class ChatRoute(Route):
             accumulated_reasoning = ""
 
             try:
+                # Notify frontend about saved user message id early (useful for quoting/replying).
+                if user_record and not client_disconnected:
+                    user_saved_info = {
+                        "type": "user_message_saved",
+                        "data": {
+                            "id": user_record.id,
+                            "created_at": user_record.created_at.astimezone().isoformat(),
+                        },
+                    }
+                    try:
+                        yield f"data: {json.dumps(user_saved_info, ensure_ascii=False)}\n\n"
+                    except Exception:
+                        pass
+
                 async with track_conversation(self.running_convs, webchat_conv_id):
                     while True:
                         try:
@@ -418,7 +433,7 @@ class ChatRoute(Route):
             part_copy = {k: v for k, v in part.items() if k != "path"}
             message_parts_for_storage.append(part_copy)
 
-        await self.platform_history_mgr.insert(
+        user_record = await self.platform_history_mgr.insert(
             platform_id="webchat",
             user_id=webchat_conv_id,
             content={"type": "user", "message": message_parts_for_storage},

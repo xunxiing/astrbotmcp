@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import textwrap
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Literal, Optional, Tuple, TypedDict
 
 from ..astrbot_client import AstrBotClient
@@ -22,6 +23,9 @@ _SESSION_CACHE: Dict[Tuple[str, str, str], str] = {}
 
 _LAST_SAVED_MESSAGE_ID_LOCK = asyncio.Lock()
 _LAST_SAVED_MESSAGE_ID_BY_SESSION: Dict[Tuple[str, str, str], str] = {}
+
+_LAST_USER_MESSAGE_ID_LOCK = asyncio.Lock()
+_LAST_USER_MESSAGE_ID_BY_SESSION: Dict[Tuple[str, str, str], str] = {}
 
 
 def _session_cache_key(client: AstrBotClient, platform_id: str) -> Tuple[str, str, str]:
@@ -68,6 +72,26 @@ def _format_quote_block(*, message_id: str, sender: str, text: str) -> str:
         text = "<empty>"
     text = textwrap.shorten(text, width=800, placeholder="…")
     return f"[引用消息 {message_id} | {sender}] {text}\n"
+
+
+def _normalize_history_message_id(value: Any) -> Any:
+    """
+    AstrBot WebChat reply expects `message_id` to be the history record primary key (usually int).
+    Keep original value if it cannot be safely converted.
+    """
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    s = str(value).strip()
+    if not s:
+        return value
+    if s.isdigit():
+        try:
+            return int(s)
+        except Exception:
+            return value
+    return value
 
 
 async def _resolve_webchat_quotes(
@@ -147,6 +171,13 @@ async def send_platform_message_direct(
     message_type: Literal["GroupMessage", "FriendMessage"] = "GroupMessage",
 ) -> Dict[str, Any]:
     """
+    NOTE:
+      - If you provide `target_id`, this tool sends to a real platform target (bypass LLM).
+      - If you do NOT provide `target_id`, this tool uses AstrBot WebChat `/api/chat/send` (LLM required).
+      - Quoting in WebChat uses history numeric ids:
+        - `last_user_message_id`: the id of the user message you just sent (preferred for quoting your own message).
+        - `last_saved_message_id`: the id of the bot message saved by AstrBot (from SSE `message_saved`).
+
     NOTE:
       - If you provide `target_id`, this tool will call AstrBot dashboard API `/api/platform/send_message`
         (bypass LLM) to send to a real group/user.
@@ -394,6 +425,7 @@ async def send_platform_message(
     new_session: bool = False,
     reply_to_message_id: Optional[str] = None,
     reply_to_last_saved_message: bool = False,
+    reply_to_last_user_message: bool = False,
     selected_provider: Optional[str] = None,
     selected_model: Optional[str] = None,
     enable_streaming: bool = True,
@@ -433,6 +465,7 @@ async def send_platform_message(
     mode = "webchat"
     session_platform_id = "webchat"
     routing_debug: Dict[str, Any] = {}
+    send_started_at = datetime.now(timezone.utc)
 
     if message_chain is None:
         message_chain = []
@@ -597,6 +630,14 @@ async def send_platform_message(
     else:
         routing_debug["skipped"] = "No ASTRBOT_USERNAME configured; cannot mirror dashboard session routing."
 
+    if reply_to_last_user_message and not reply_to_message_id:
+        async with _LAST_USER_MESSAGE_ID_LOCK:
+            reply_to_message_id = _LAST_USER_MESSAGE_ID_BY_SESSION.get(
+                _last_saved_key(client, used_session_id)
+            )
+
+    # reply_to_last_saved_message historically points to the last saved bot message (message_saved.id).
+    # With user_message_saved supported, callers can prefer last_user_message_id from the response.
     if reply_to_last_saved_message and not reply_to_message_id:
         async with _LAST_SAVED_MESSAGE_ID_LOCK:
             reply_to_message_id = _LAST_SAVED_MESSAGE_ID_BY_SESSION.get(
@@ -604,29 +645,28 @@ async def send_platform_message(
             )
 
     # 2. 把 message_chain 转成 AstrBot chat/send 需要的 message_parts
-    reply_ids: List[str] = []
-    if reply_to_message_id:
-        reply_ids.append(str(reply_to_message_id))
-
+    explicit_reply_present = False
     for part in message_chain:
         if not isinstance(part, dict):
             continue
         if part.get("type") in ("reply", "quote", "reference"):
             msg_id = part.get("message_id") or part.get("id")
-            if msg_id:
-                reply_ids.append(str(msg_id))
-
-    quote_prefix = ""
-    quote_debug: Dict[str, Any] | None = None
-    if reply_ids:
-        quote_prefix, quote_debug = await _resolve_webchat_quotes(
-            client, session_id=used_session_id, reply_ids=reply_ids
-        )
+            if msg_id is not None and str(msg_id).strip():
+                explicit_reply_present = True
+                break
 
     message_parts: List[Dict[str, Any]] = []
-    if quote_prefix:
-        message_parts.append({"type": "plain", "text": quote_prefix})
+    reply_ids: List[str] = []
+    if reply_to_message_id and not explicit_reply_present:
+        message_parts.append(
+            {
+                "type": "reply",
+                "message_id": _normalize_history_message_id(reply_to_message_id),
+            }
+        )
+        reply_ids.append(str(reply_to_message_id))
 
+    quote_debug: Dict[str, Any] | None = None
     uploaded_attachments: List[Dict[str, Any]] = []
 
     for part in message_chain:
@@ -636,7 +676,16 @@ async def send_platform_message(
             text = part.get("text", "")
             message_parts.append({"type": "plain", "text": text})
         elif p_type in ("reply", "quote", "reference"):
-            continue
+            msg_id = part.get("message_id") or part.get("id")
+            if msg_id is None:
+                continue
+            msg_id_str = str(msg_id).strip()
+            if not msg_id_str:
+                continue
+            message_parts.append(
+                {"type": "reply", "message_id": _normalize_history_message_id(msg_id)}
+            )
+            reply_ids.append(msg_id_str)
         elif p_type in ("image", "file", "record", "video"):
             file_path = part.get("file_path")
             url = part.get("url")
@@ -734,6 +783,14 @@ async def send_platform_message(
             # 忽略未知类型
             continue
 
+    if reply_ids:
+        try:
+            _ignored, quote_debug = await _resolve_webchat_quotes(
+                client, session_id=used_session_id, reply_ids=reply_ids
+            )
+        except Exception as e:
+            quote_debug = {"error": str(e), "resolved": {}, "missing": reply_ids}
+
     if not message_parts:
         return {
             "status": "error",
@@ -794,6 +851,7 @@ async def send_platform_message(
     # 简单聚合文本回复（仅供参考，保留原始事件）
     reply_text_chunks: List[str] = []
     saved_message_ids: List[str] = []
+    user_message_ids: List[str] = []
     if not events:
         return {
             "status": "error",
@@ -810,7 +868,47 @@ async def send_platform_message(
             "routing_debug": routing_debug,
         }
 
+    # If we only got bookkeeping events (e.g., user_message_saved) but no response stream at all,
+    # treat it as an error while still returning useful ids.
+    response_types = {"plain", "complete", "image", "record", "file", "message_saved", "end", "break"}
+    has_response = any(ev.get("type") in response_types for ev in events if isinstance(ev, dict))
+    if not has_response:
+        user_ids = []
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            if ev.get("type") == "user_message_saved":
+                data = ev.get("data") or {}
+                mid = data.get("id")
+                if mid is not None:
+                    user_ids.append(str(mid))
+        return {
+            "status": "error",
+            "message": "AstrBot produced no reply events for /api/chat/send (check AstrBot logs for provider/model errors).",
+            "mode": mode,
+            "platform_id": session_platform_id,
+            "requested_platform_id": platform_id,
+            "session_id": used_session_id,
+            "selected_provider": effective_provider,
+            "selected_model": effective_model,
+            "request_message_parts": message_parts,
+            "user_message_ids": user_ids,
+            "last_user_message_id": (user_ids[-1] if user_ids else None),
+            "quote_debug": quote_debug,
+            "routing_debug": routing_debug,
+            "reply_events": events,
+        }
+
     for ev in events:
+        if ev.get("type") == "user_message_saved":
+            data = ev.get("data") or {}
+            saved_id = data.get("id")
+            if saved_id is not None:
+                user_message_ids.append(str(saved_id))
+                async with _LAST_USER_MESSAGE_ID_LOCK:
+                    _LAST_USER_MESSAGE_ID_BY_SESSION[_last_saved_key(client, used_session_id)] = str(
+                        saved_id
+                    )
         if ev.get("type") == "message_saved":
             data = ev.get("data") or {}
             saved_id = data.get("id")
@@ -821,8 +919,76 @@ async def send_platform_message(
             if isinstance(data, str):
                 reply_text_chunks.append(data)
 
+    # Fallback: some AstrBot versions do not emit `user_message_saved`.
+    # Try to infer the latest user message id by fetching /api/chat/get_session and scanning history.
+    if not user_message_ids:
+        match_hint = None
+        for part in message_parts:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") == "plain":
+                txt = part.get("text")
+                if isinstance(txt, str) and txt.strip():
+                    match_hint = txt.strip()
+                    break
+
+        try:
+            sess = await client.get_platform_session(session_id=used_session_id)
+            if sess.get("status") == "ok":
+                history = (sess.get("data") or {}).get("history") or []
+                if isinstance(history, list):
+                    expected_sender = (client.settings.username or "").strip() or None
+
+                    def is_recent_user_record(item: Dict[str, Any]) -> bool:
+                        if not isinstance(item, dict):
+                            return False
+                        content = item.get("content") or {}
+                        if not isinstance(content, dict) or content.get("type") != "user":
+                            return False
+                        if expected_sender and item.get("sender_name") != expected_sender:
+                            return False
+                        if match_hint:
+                            extracted = _extract_plain_text_from_history_item(item)
+                            if match_hint[:32] not in extracted:
+                                return False
+                        created_at = item.get("created_at")
+                        if isinstance(created_at, str) and created_at:
+                            try:
+                                # e.g. 2025-12-18T21:47:07.684801+08:00
+                                dt = datetime.fromisoformat(created_at)
+                                if dt.tzinfo is None:
+                                    dt = dt.replace(tzinfo=timezone.utc)
+                                # accept a small clock skew window
+                                return dt.astimezone(timezone.utc) >= send_started_at.replace(
+                                    microsecond=0
+                                ) - timedelta(seconds=5)
+                            except Exception:
+                                pass
+                        return True
+
+                    # Look from newest to oldest for a likely match.
+                    for item in reversed(history):
+                        if not isinstance(item, dict):
+                            continue
+                        if not is_recent_user_record(item):
+                            continue
+                        mid = item.get("id")
+                        if mid is None:
+                            continue
+                        user_message_ids.append(str(mid))
+                        async with _LAST_USER_MESSAGE_ID_LOCK:
+                            _LAST_USER_MESSAGE_ID_BY_SESSION[_last_saved_key(client, used_session_id)] = str(
+                                mid
+                            )
+                        break
+        except Exception as e:
+            routing_debug["user_id_fallback_exception"] = str(e)
+
     last_saved_message_id: str | None = (
         saved_message_ids[-1] if saved_message_ids else None
+    )
+    last_user_message_id: str | None = (
+        user_message_ids[-1] if user_message_ids else None
     )
     if last_saved_message_id:
         async with _LAST_SAVED_MESSAGE_ID_LOCK:
@@ -844,6 +1010,8 @@ async def send_platform_message(
         "uploaded_attachments": uploaded_attachments,
         "reply_events": events,
         "reply_text": "".join(reply_text_chunks),
+        "user_message_ids": user_message_ids,
+        "last_user_message_id": last_user_message_id,
         "saved_message_ids": saved_message_ids,
         "last_saved_message_id": last_saved_message_id,
         "quote_debug": quote_debug,
