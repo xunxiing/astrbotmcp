@@ -243,6 +243,10 @@ AstrBot 已经内置了 MCP 客户端管理逻辑（参见 `routes/tools.py`）�
 
 你可以从返回的 `session_id` 中获取后续会话的标识，用于调用 `get_platform_session_messages`。
 
+补充说明：
+- `reply_events` 来自 AstrBot 的 SSE；如果 SSE 的 `data:` 不是 JSON，MCP 会以 `{"type":"raw","data":"..."}` 的形式保留（避免“无事件 -> 误判失败”）。
+- 当 `/api/chat/send` 报错或返回事件异常时，MCP 会附带 `astrbot_logs_tail`（来自 `/api/log-history`）帮助定位插件/模型侧错误；但如果插件使用 `print()` 而非 AstrBot `logger`，这些输出通常不会进入 `/api/log-history`。
+
 ### 3.1 `send_platform_message_direct`
 
 - 用途：绕过 LLM，直接调用 AstrBot 的平台适配器接口 `/api/platform/send_message` 给指定群/好友发送消息链。

@@ -98,7 +98,16 @@ class AstrBotClient:
             pwd = hashlib.md5(pwd.encode("utf-8")).hexdigest()
 
         url = f"{self.base_url}/api/auth/login"
-        client_kwargs = {"timeout": self.timeout}
+        # SSE endpoints can legitimately stay quiet for a long time while work is happening.
+        # Use an infinite read timeout, while keeping connect/write/pool bounded.
+        client_kwargs = {
+            "timeout": httpx.Timeout(
+                connect=self.timeout,
+                read=None,
+                write=self.timeout,
+                pool=self.timeout,
+            )
+        }
         if self.settings.disable_proxy:
             client_kwargs["trust_env"] = False  # 禁用代理，忽略环境变量设置
 
@@ -175,9 +184,12 @@ class AstrBotClient:
         max_events: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Consume a simple SSE endpoint and return parsed JSON payloads.
+        Consume an SSE endpoint and return parsed event payloads.
 
-        AstrBot's SSE endpoints use `data: {...}\\n\\n` format per event.
+        AstrBot's SSE endpoints typically use `data: {...}\\n\\n` format per event.
+        This parser is tolerant:
+          - Supports multi-line `data:` frames per SSE spec (joined with `\\n`).
+          - If `data:` is not valid JSON, returns it as `{\"type\":\"raw\",\"data\":...}`.
 
         `max_seconds` is a soft upper bound for how long we wait:
         - 如果持续有事件流入，最多等待约 `max_seconds` 秒；
@@ -223,31 +235,63 @@ class AstrBotClient:
                     )
 
                 async def consume() -> None:
-                    async for line in response.aiter_lines():
-                        if not line:
-                            # Heartbeats / blank lines
-                            continue
+                    current_event: str | None = None
+                    data_lines: List[str] = []
 
-                        if not line.startswith("data:"):
-                            continue
-
-                        _, data_str = line.split("data:", 1)
-                        data_str = data_str.strip()
+                    def flush() -> None:
+                        nonlocal current_event, data_lines
+                        if not data_lines:
+                            current_event = None
+                            return
+                        data_str = "\n".join(data_lines).strip()
+                        data_lines = []
 
                         if not data_str:
-                            continue
+                            current_event = None
+                            return
 
                         try:
                             payload = json.loads(data_str)
                         except json.JSONDecodeError:
-                            continue
+                            payload = None
 
                         if isinstance(payload, dict):
+                            if current_event and "event" not in payload:
+                                payload = {**payload, "event": current_event}
                             events.append(payload)
+                        else:
+                            events.append(
+                                {
+                                    "type": "raw",
+                                    "event": current_event,
+                                    "data": data_str,
+                                }
+                            )
+                        current_event = None
 
-                        if max_events is not None and len(events) >= max_events:
-                            # Enough events collected; stop consuming.
-                            break
+                    async for line in response.aiter_lines():
+                        # Blank line terminates an SSE event.
+                        if line == "":
+                            flush()
+                            if max_events is not None and len(events) >= max_events:
+                                break
+                            continue
+
+                        # Comments / heartbeats
+                        if line.startswith(":"):
+                            continue
+
+                        if line.startswith("event:"):
+                            current_event = line.split("event:", 1)[1].strip() or None
+                            continue
+
+                        if line.startswith("data:"):
+                            data_lines.append(line.split("data:", 1)[1].lstrip())
+                            continue
+
+                        continue
+
+                    flush()
 
                 if max_seconds is not None and max_seconds > 0:
                     try:

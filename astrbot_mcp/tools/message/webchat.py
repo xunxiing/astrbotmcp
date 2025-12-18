@@ -22,6 +22,36 @@ from .quote import _resolve_webchat_quotes
 from .utils import _extract_plain_text_from_history_item, _normalize_history_message_id
 
 
+async def _get_astrbot_log_tail(
+    client: AstrBotClient, *, limit: int = 120
+) -> Dict[str, Any] | None:
+    try:
+        hist = await client.get_log_history()
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"AstrBot API error: {getattr(getattr(e, 'response', None), 'status_code', None) or 'Unknown'}",
+            "detail": _httpx_error_detail(e),
+        }
+    if hist.get("status") != "ok":
+        return {
+            "status": hist.get("status"),
+            "message": hist.get("message"),
+            "raw": hist,
+        }
+    logs = (hist.get("data") or {}).get("logs", [])
+    if not isinstance(logs, list):
+        return {
+            "status": "error",
+            "message": "Unexpected /api/log-history response shape (logs is not a list).",
+            "raw": hist,
+        }
+    return {
+        "status": "ok",
+        "logs": logs[-max(1, int(limit)) :],
+    }
+
+
 async def send_platform_message(
     platform_id: str,
     message_chain: Optional[List[MessagePart]] = None,
@@ -453,6 +483,7 @@ async def send_platform_message(
             "selected_model": effective_model,
             "request_message_parts": message_parts,
             "detail": _httpx_error_detail(e),
+            "astrbot_logs_tail": await _get_astrbot_log_tail(client),
             "hint": (
                 "If you see 'has no provider supported' in AstrBot logs, "
                 "set selected_provider/selected_model (or env ASTRBOT_DEFAULT_PROVIDER/ASTRBOT_DEFAULT_MODEL)."
@@ -476,6 +507,7 @@ async def send_platform_message(
             "selected_provider": effective_provider,
             "selected_model": effective_model,
             "request_message_parts": message_parts,
+            "astrbot_logs_tail": await _get_astrbot_log_tail(client),
             "hint": "Check AstrBot logs for the root cause (often provider/model config).",
             "quote_debug": quote_debug,
             "routing_debug": routing_debug,
@@ -483,7 +515,17 @@ async def send_platform_message(
 
     # If we only got bookkeeping events (e.g., user_message_saved) but no response stream at all,
     # treat it as an error while still returning useful ids.
-    response_types = {"plain", "complete", "image", "record", "file", "message_saved", "end", "break"}
+    response_types = {
+        "plain",
+        "complete",
+        "image",
+        "record",
+        "file",
+        "message_saved",
+        "end",
+        "break",
+        "raw",
+    }
     has_response = any(ev.get("type") in response_types for ev in events if isinstance(ev, dict))
     if not has_response:
         user_ids = []
@@ -495,9 +537,11 @@ async def send_platform_message(
                 mid = data.get("id")
                 if mid is not None:
                     user_ids.append(str(mid))
+        # Some plugins reply by side effects (e.g., sending messages via adapters) and may only
+        # emit bookkeeping events on the WebChat SSE stream. Treat as ok but include a warning.
         return {
-            "status": "error",
-            "message": "AstrBot produced no reply events for /api/chat/send (check AstrBot logs for provider/model errors).",
+            "status": "ok",
+            "warning": "No reply events were observed on the /api/chat/send SSE stream; check AstrBot logs if you expected an LLM reply.",
             "mode": mode,
             "platform_id": session_platform_id,
             "requested_platform_id": platform_id,
@@ -510,6 +554,7 @@ async def send_platform_message(
             "quote_debug": quote_debug,
             "routing_debug": routing_debug,
             "reply_events": events,
+            "astrbot_logs_tail": await _get_astrbot_log_tail(client),
         }
 
     for ev in events:
