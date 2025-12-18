@@ -2,9 +2,8 @@
 
 [![MCP Badge](https://lobehub.com/badge/mcp/xunxiing-astrbotmcp)](https://lobehub.com/mcp/xunxiing-astrbotmcp)
 
-> **AstrBot 无法通过 MCP 控制自身。本项目填补了这一空白。**
+> **AstrBot 无法通过 MCP 控制自身。本项目填补了这一空白,为Astrbot开发者提供AI AGENT时代调试插件的自动化工具**
 
-### 警告与免责声明
 
 ⚠️ **本项目提供的是运维级控制能力，使用时请注意：**
 
@@ -13,25 +12,7 @@
 3. **生产环境** - 建议仅在开发/测试环境使用控制面功能
 4. **数据安全** - 日志可能包含敏感信息，注意脱敏处理
 
-**本项目与 AstrBot 官方无直接关联，由社区独立维护。**
-
----
-
-### 这个项目到底在干什么
-
-#### AstrBot 自身的 MCP 控制面
-
-通过 MCP tool 实现：
-
-- **重启 AstrBot Core** - 进程级控制，直接调用 `/api/stat/restart-core`
-- **运行状态监听** - 实时日志流、平台状态监控
-- **配置热加载** - 动态读取/修改配置
-- **发送信息** -自动化测试插件
-- **浏览插件市场**
-
-#### 为astrbot开发者提供AI AGENT时代调试插件的自动化工具
-
----
+### **本项目与 AstrBot 官方无直接关联，由社区独立维护。**
 
 ### 快速开始
 
@@ -106,6 +87,7 @@ npm install -g astrbotmcp
 
 </details>
 
+
 #### 环境变量说明
 
 | 变量 | 说明 | 默认值 |
@@ -124,10 +106,9 @@ npm install -g astrbotmcp
 **解决方案：**
 
 1. **默认行为**：AstrBot MCP 默认禁用代理（`ASTRBOTMCP_DISABLE_PROXY=true`），确保本地请求直接发送到 AstrBot。
-
 2. **如果需要使用代理**：设置 `ASTRBOTMCP_DISABLE_PROXY=false`，但请注意这可能导致本地 API 请求失败。
-
 3. **推荐配置**：对于本地 AstrBot 实例，始终禁用代理：
+
 ```json
 {
   "mcpServers": {
