@@ -18,7 +18,7 @@ All functions are re-exported from this module for convenience.
 # 导入所有工具函数，保持向后兼容
 from .control_tools import restart_astrbot
 from .log_tools import get_astrbot_logs
-from .message_tools import (
+from .message import (
     send_platform_message,
     send_platform_message_direct,
 )
