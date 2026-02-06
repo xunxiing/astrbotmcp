@@ -148,7 +148,7 @@ npm install -g astrbotmcp
 
 #### 消息工具
 
-- `send_platform_message` - 通过 Web Chat API 发送消息链（仅 WebUI）
+- `send_platform_message` - 通过 Web Chat API 发送消息链（仅 WebUI；无需 `platform_id` / `target_id`）
 - `get_platform_session_messages` - 读取会话消息历史
 
 #### 插件市场
@@ -184,9 +184,15 @@ logs = get_astrbot_logs(wait_seconds=10)
 ```python
 # 发送带图片的消息链
 send_platform_message(
-    platform_id="webchat",
     message="Hello from MCP",
     images=["/path/to/image.png"]
+)
+```
+
+```python
+# 插件命令请直接发送纯文本，不要命令前缀
+send_platform_message(
+    message="抽老婆帮助"
 )
 ```
 

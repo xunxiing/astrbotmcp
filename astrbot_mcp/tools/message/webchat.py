@@ -106,18 +106,13 @@ async def send_platform_message(
     enable_streaming: bool = True,
 ) -> Dict[str, Any]:
     """
-    通过 AstrBot 的 Web Chat API 发送消息链（支持文本、图片、文件等）。
+    Send a message through AstrBot WebUI chat API (`/api/chat/send`) only.
 
-    参数：
-      - platform_id: 平台 ID，例如 "webchat" 或配置中的平台 ID。
-      - message_chain: 消息链，由 MessagePart 列表组成。
-        - 文本:  {"type": "plain", "text": "..."}
-        - 回复:  {"type": "reply", "message_id": "..."}
-        - 图片/文件/语音/视频: {"type": "image"|"file"|"record"|"video", "file_path": "本地路径或URL"} 或 {"type": "...", "url": "http(s) URL"}
-      - message / images / files / videos / records: 可选便捷参数；当未传 message_chain 时，会自动拼成消息链。
-      - session_id: 可选的平台会话 ID；如果为空，会自动为该平台创建新会话。
-      - selected_provider / selected_model: 可选，指定 AstrBot 内部的 provider/model。
-      - enable_streaming: 是否启用流式回复（影响 AstrBot 返回的 SSE 事件类型）。
+    LLM caller rules:
+      - Do not pass `platform_id`, `target_id`, or adapter routing params.
+      - This tool always uses WebUI session mode.
+      - For plugin commands, send plain command text with no prefix.
+        Example: "抽老婆帮助" (not "/抽老婆帮助").
     """
     client = AstrBotClient.from_env()
     mode = "webchat"

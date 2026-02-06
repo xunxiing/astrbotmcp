@@ -1,6 +1,7 @@
 import subprocess
 import sys
 import asyncio
+import inspect
 import pytest
 
 
@@ -36,29 +37,17 @@ def test_cli_version_flag_exits() -> None:
     assert result.stdout.strip()
 
 
-def test_send_platform_message_rejects_target_id(monkeypatch) -> None:
+def test_send_platform_message_signature_is_webchat_only() -> None:
     from astrbot_mcp.tools.message import webchat as webchat_mod
 
-    class _DummyClient:
-        pass
+    params = inspect.signature(webchat_mod.send_platform_message).parameters
+    assert "platform_id" not in params
+    assert "target_id" not in params
+    assert "message_type" not in params
 
-    monkeypatch.setattr(
-        webchat_mod.AstrBotClient,
-        "from_env",
-        classmethod(lambda cls: _DummyClient()),
-    )
-
-    result = asyncio.run(
-        webchat_mod.send_platform_message(
-            platform_id="napcat",
-            target_id="123456",
-            message="hello",
-        )
-    )
-
-    assert result["status"] == "error"
-    assert "deprecated" in result["message"]
-    assert result["platform_id"] == "webchat"
+    doc = webchat_mod.send_platform_message.__doc__ or ""
+    assert "no prefix" in doc.lower()
+    assert "/抽老婆帮助" in doc
 
 
 def test_normalize_media_sources_supports_json_string() -> None:
