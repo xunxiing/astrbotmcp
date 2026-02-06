@@ -2,6 +2,7 @@ import subprocess
 import sys
 import asyncio
 import inspect
+import json
 import pytest
 
 
@@ -48,6 +49,16 @@ def test_send_platform_message_signature_is_webchat_only() -> None:
     doc = webchat_mod.send_platform_message.__doc__ or ""
     assert "no prefix" in doc.lower()
     assert "/抽老婆帮助" in doc
+
+
+def test_all_tool_schemas_are_ref_free_for_provider_compat() -> None:
+    import astrbot_mcp.server as server_mod
+
+    tools = asyncio.run(server_mod.server.get_tools())
+    for name, tool in tools.items():
+        schema_text = json.dumps(tool.parameters, ensure_ascii=False)
+        assert "$defs" not in schema_text, f"{name} schema contains $defs"
+        assert "$ref" not in schema_text, f"{name} schema contains $ref"
 
 
 def test_normalize_media_sources_supports_json_string() -> None:

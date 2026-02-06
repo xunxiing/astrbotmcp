@@ -7,7 +7,6 @@ from typing import Any, Dict, List, Optional
 
 from ...astrbot_client import AstrBotClient
 from ..helpers import _httpx_error_detail, _resolve_local_file_path
-from ..types import MessagePart
 from .cache import (
     _LAST_SAVED_MESSAGE_ID_BY_SESSION,
     _LAST_SAVED_MESSAGE_ID_LOCK,
@@ -88,7 +87,7 @@ def _normalize_media_sources(
 
 
 async def send_platform_message(
-    message_chain: Optional[List[MessagePart]] = None,
+    message_chain: Optional[List[Dict[str, Any]]] = None,
     message: Optional[str] = None,
     images: Optional[List[str] | str] = None,
     files: Optional[List[str] | str] = None,
