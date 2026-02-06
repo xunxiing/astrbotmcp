@@ -2,6 +2,7 @@ import asyncio
 import json
 import mimetypes
 import os
+import re
 import uuid
 from contextlib import asynccontextmanager
 from typing import cast
@@ -9,7 +10,7 @@ from typing import cast
 from quart import Response as QuartResponse
 from quart import g, make_response, request, send_file
 
-from astrbot.core import logger
+from astrbot.core import logger, sp
 from astrbot.core.core_lifecycle import AstrBotCoreLifecycle
 from astrbot.core.db import BaseDatabase
 from astrbot.core.platform.sources.webchat.webchat_queue_mgr import webchat_queue_mgr
@@ -166,7 +167,11 @@ class ChatRoute(Route):
                     parts.append({"type": "plain", "text": part.get("text", "")})
                 elif part_type == "reply":
                     parts.append(
-                        {"type": "reply", "message_id": part.get("message_id")}
+                        {
+                            "type": "reply",
+                            "message_id": part.get("message_id"),
+                            "selected_text": part.get("selected_text", ""),
+                        }
                     )
                 elif attachment_id := part.get("attachment_id"):
                     attachment = await self.db.get_attachment_by_id(attachment_id)
@@ -221,22 +226,86 @@ class ChatRoute(Route):
             "filename": os.path.basename(file_path),
         }
 
+    def _extract_web_search_refs(
+        self, accumulated_text: str, accumulated_parts: list
+    ) -> dict:
+        """从消息中提取 web_search_tavily 的引用
+
+        Args:
+            accumulated_text: 累积的文本内容
+            accumulated_parts: 累积的消息部分列表
+
+        Returns:
+            包含 used 列表的字典，记录被引用的搜索结果
+        """
+        # 从 accumulated_parts 中找到所有 web_search_tavily 的工具调用结果
+        web_search_results = {}
+        tool_call_parts = [
+            p
+            for p in accumulated_parts
+            if p.get("type") == "tool_call" and p.get("tool_calls")
+        ]
+
+        for part in tool_call_parts:
+            for tool_call in part["tool_calls"]:
+                if tool_call.get("name") != "web_search_tavily" or not tool_call.get(
+                    "result"
+                ):
+                    continue
+                try:
+                    result_data = json.loads(tool_call["result"])
+                    for item in result_data.get("results", []):
+                        if idx := item.get("index"):
+                            web_search_results[idx] = {
+                                "url": item.get("url"),
+                                "title": item.get("title"),
+                                "snippet": item.get("snippet"),
+                            }
+                except (json.JSONDecodeError, KeyError):
+                    pass
+
+        if not web_search_results:
+            return {}
+
+        # 从文本中提取所有 <ref>xxx</ref> 标签并去重
+        ref_indices = {
+            m.strip() for m in re.findall(r"<ref>(.*?)</ref>", accumulated_text)
+        }
+
+        # 构建被引用的结果列表
+        used_refs = []
+        for ref_index in ref_indices:
+            if ref_index not in web_search_results:
+                continue
+            payload = {"index": ref_index, **web_search_results[ref_index]}
+            if favicon := sp.temorary_cache.get("_ws_favicon", {}).get(payload["url"]):
+                payload["favicon"] = favicon
+            used_refs.append(payload)
+
+        return {"used": used_refs} if used_refs else {}
+
     async def _save_bot_message(
         self,
         webchat_conv_id: str,
         text: str,
         media_parts: list,
         reasoning: str,
+        agent_stats: dict,
+        refs: dict,
     ):
         """保存 bot 消息到历史记录，返回保存的记录"""
         bot_message_parts = []
+        bot_message_parts.extend(media_parts)
         if text:
             bot_message_parts.append({"type": "plain", "text": text})
-        bot_message_parts.extend(media_parts)
 
         new_his = {"type": "bot", "message": bot_message_parts}
         if reasoning:
             new_his["reasoning"] = reasoning
+        if agent_stats:
+            new_his["agent_stats"] = agent_stats
+        if refs:
+            new_his["refs"] = refs
 
         record = await self.platform_history_mgr.insert(
             platform_id="webchat",
@@ -288,29 +357,18 @@ class ChatRoute(Route):
 
         # 构建用户消息段（包含 path 用于传递给 adapter）
         message_parts = await self._build_user_message_parts(message)
-        user_record = None
+
+        message_id = str(uuid.uuid4())
 
         async def stream():
             client_disconnected = False
             accumulated_parts = []
             accumulated_text = ""
             accumulated_reasoning = ""
-
+            tool_calls = {}
+            agent_stats = {}
+            refs = {}
             try:
-                # Notify frontend about saved user message id early (useful for quoting/replying).
-                if user_record and not client_disconnected:
-                    user_saved_info = {
-                        "type": "user_message_saved",
-                        "data": {
-                            "id": user_record.id,
-                            "created_at": user_record.created_at.astimezone().isoformat(),
-                        },
-                    }
-                    try:
-                        yield f"data: {json.dumps(user_saved_info, ensure_ascii=False)}\n\n"
-                    except Exception:
-                        pass
-
                 async with track_conversation(self.running_convs, webchat_conv_id):
                     while True:
                         try:
@@ -326,9 +384,26 @@ class ChatRoute(Route):
                         if not result:
                             continue
 
+                        if (
+                            "message_id" in result
+                            and result["message_id"] != message_id
+                        ):
+                            logger.warning("webchat stream message_id mismatch")
+                            continue
+
                         result_text = result["data"]
                         msg_type = result.get("type")
                         streaming = result.get("streaming", False)
+                        chain_type = result.get("chain_type")
+
+                        if chain_type == "agent_stats":
+                            stats_info = {
+                                "type": "agent_stats",
+                                "data": json.loads(result_text),
+                            }
+                            yield f"data: {json.dumps(stats_info, ensure_ascii=False)}\n\n"
+                            agent_stats = stats_info["data"]
+                            continue
 
                         # 发送 SSE 数据
                         try:
@@ -350,11 +425,35 @@ class ChatRoute(Route):
 
                         # 累积消息部分
                         if msg_type == "plain":
-                            chain_type = result.get("chain_type", "normal")
-                            if chain_type == "reasoning":
+                            chain_type = result.get("chain_type")
+                            if chain_type == "tool_call":
+                                tool_call = json.loads(result_text)
+                                tool_calls[tool_call.get("id")] = tool_call
+                                if accumulated_text:
+                                    # 如果累积了文本，则先保存文本
+                                    accumulated_parts.append(
+                                        {"type": "plain", "text": accumulated_text}
+                                    )
+                                    accumulated_text = ""
+                            elif chain_type == "tool_call_result":
+                                tcr = json.loads(result_text)
+                                tc_id = tcr.get("id")
+                                if tc_id in tool_calls:
+                                    tool_calls[tc_id]["result"] = tcr.get("result")
+                                    tool_calls[tc_id]["finished_ts"] = tcr.get("ts")
+                                accumulated_parts.append(
+                                    {
+                                        "type": "tool_call",
+                                        "tool_calls": [tool_calls[tc_id]],
+                                    }
+                                )
+                                tool_calls.pop(tc_id, None)
+                            elif chain_type == "reasoning":
                                 accumulated_reasoning += result_text
-                            else:
+                            elif streaming:
                                 accumulated_text += result_text
+                            else:
+                                accumulated_text = result_text
                         elif msg_type == "image":
                             filename = result_text.replace("[IMAGE]", "")
                             part = await self._create_attachment_from_file(
@@ -382,15 +481,34 @@ class ChatRoute(Route):
                         if msg_type == "end":
                             break
                         elif (
-                            (streaming and msg_type == "complete")
-                            or not streaming
-                            or msg_type == "break"
+                            (streaming and msg_type == "complete") or not streaming
+                            # or msg_type == "break"
                         ):
+                            if (
+                                chain_type == "tool_call"
+                                or chain_type == "tool_call_result"
+                            ):
+                                continue
+
+                            # 提取 web_search_tavily 引用
+                            try:
+                                refs = self._extract_web_search_refs(
+                                    accumulated_text,
+                                    accumulated_parts,
+                                )
+                            except Exception as e:
+                                logger.exception(
+                                    f"Failed to extract web search refs: {e}",
+                                    exc_info=True,
+                                )
+
                             saved_record = await self._save_bot_message(
                                 webchat_conv_id,
                                 accumulated_text,
                                 accumulated_parts,
                                 accumulated_reasoning,
+                                agent_stats,
+                                refs,
                             )
                             # 发送保存的消息信息给前端
                             if saved_record and not client_disconnected:
@@ -405,11 +523,12 @@ class ChatRoute(Route):
                                     yield f"data: {json.dumps(saved_info, ensure_ascii=False)}\n\n"
                                 except Exception:
                                     pass
-                            # 重置累积变量 (对于 break 后的下一段消息)
-                            if msg_type == "break":
-                                accumulated_parts = []
-                                accumulated_text = ""
-                                accumulated_reasoning = ""
+                            accumulated_parts = []
+                            accumulated_text = ""
+                            accumulated_reasoning = ""
+                            # tool_calls = {}
+                            agent_stats = {}
+                            refs = {}
             except BaseException as e:
                 logger.exception(f"WebChat stream unexpected error: {e}", exc_info=True)
 
@@ -424,6 +543,7 @@ class ChatRoute(Route):
                     "selected_provider": selected_provider,
                     "selected_model": selected_model,
                     "enable_streaming": enable_streaming,
+                    "message_id": message_id,
                 },
             ),
         )
@@ -433,7 +553,7 @@ class ChatRoute(Route):
             part_copy = {k: v for k, v in part.items() if k != "path"}
             message_parts_for_storage.append(part_copy)
 
-        user_record = await self.platform_history_mgr.insert(
+        await self.platform_history_mgr.insert(
             platform_id="webchat",
             user_id=webchat_conv_id,
             content={"type": "user", "message": message_parts_for_storage},
@@ -586,9 +706,17 @@ class ChatRoute(Route):
             page_size=100,  # 暂时返回前100个
         )
 
-        # 转换为字典格式，并添加额外信息
+        # 转换为字典格式，并添加项目信息
+        # get_platform_sessions_by_creator 现在返回 list[dict] 包含 session 和项目字段
         sessions_data = []
-        for session in sessions:
+        for item in sessions:
+            session = item["session"]
+            project_id = item["project_id"]
+
+            # 跳过属于项目的会话（在侧边栏对话列表中不显示）
+            if project_id is not None:
+                continue
+
             sessions_data.append(
                 {
                     "session_id": session.session_id,
@@ -613,6 +741,12 @@ class ChatRoute(Route):
         session = await self.db.get_platform_session_by_id(session_id)
         platform_id = session.platform_id if session else "webchat"
 
+        # 获取项目信息（如果会话属于某个项目）
+        username = g.get("username", "guest")
+        project_info = await self.db.get_project_by_session(
+            session_id=session_id, creator=username
+        )
+
         # Get platform message history using session_id
         history_ls = await self.platform_history_mgr.get(
             platform_id=platform_id,
@@ -623,16 +757,20 @@ class ChatRoute(Route):
 
         history_res = [history.model_dump() for history in history_ls]
 
-        return (
-            Response()
-            .ok(
-                data={
-                    "history": history_res,
-                    "is_running": self.running_convs.get(session_id, False),
-                },
-            )
-            .__dict__
-        )
+        response_data = {
+            "history": history_res,
+            "is_running": self.running_convs.get(session_id, False),
+        }
+
+        # 如果会话属于项目，添加项目信息
+        if project_info:
+            response_data["project"] = {
+                "project_id": project_info.project_id,
+                "title": project_info.title,
+                "emoji": project_info.emoji,
+            }
+
+        return Response().ok(data=response_data).__dict__
 
     async def update_session_display_name(self):
         """Update a Platform session's display name."""

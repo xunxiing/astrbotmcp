@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Optional
 
 from ...astrbot_client import AstrBotClient
 from ..helpers import _httpx_error_detail, _resolve_local_file_path
@@ -17,7 +18,6 @@ from .cache import (
     _last_saved_key,
     _session_cache_key,
 )
-from .direct import send_platform_message_direct
 from .quote import _resolve_webchat_quotes
 from .utils import _extract_plain_text_from_history_item, _normalize_history_message_id
 
@@ -52,16 +52,48 @@ async def _get_astrbot_log_tail(
     }
 
 
+def _normalize_media_sources(
+    value: Optional[List[str] | str],
+    *,
+    field_name: str,
+) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        if not all(isinstance(item, str) for item in value):
+            raise ValueError(f"{field_name} must contain only string paths/URLs.")
+        return [item for item in value if item]
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a list of strings or a string.")
+
+    raw = value.strip()
+    if not raw:
+        return []
+
+    # Tolerate MCP clients that serialize list args as JSON strings.
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return [raw]
+
+    if isinstance(parsed, str):
+        return [parsed] if parsed else []
+    if isinstance(parsed, list):
+        if not all(isinstance(item, str) for item in parsed):
+            raise ValueError(f"{field_name} JSON array must contain only strings.")
+        return [item for item in parsed if item]
+    raise ValueError(
+        f"{field_name} must be a string or a JSON string array of strings."
+    )
+
+
 async def send_platform_message(
-    platform_id: str,
     message_chain: Optional[List[MessagePart]] = None,
     message: Optional[str] = None,
-    images: Optional[List[str]] = None,
-    files: Optional[List[str]] = None,
-    videos: Optional[List[str]] = None,
-    records: Optional[List[str]] = None,
-    target_id: Optional[str] = None,
-    message_type: Literal["GroupMessage", "FriendMessage"] = "GroupMessage",
+    images: Optional[List[str] | str] = None,
+    files: Optional[List[str] | str] = None,
+    videos: Optional[List[str] | str] = None,
+    records: Optional[List[str] | str] = None,
     session_id: Optional[str] = None,
     conversation_id: Optional[str] = None,
     use_last_session: bool = True,
@@ -88,39 +120,34 @@ async def send_platform_message(
       - enable_streaming: 是否启用流式回复（影响 AstrBot 返回的 SSE 事件类型）。
     """
     client = AstrBotClient.from_env()
-
-    if target_id:
-        direct_result = await send_platform_message_direct(
-            platform_id=platform_id,
-            target_id=str(target_id),
-            message_chain=message_chain,
-            message=message,
-            images=images,
-            files=files,
-            videos=videos,
-            records=records,
-            message_type=message_type,
-        )
-        if isinstance(direct_result, dict):
-            direct_result.setdefault("mode", "direct")
-        return direct_result
-
     mode = "webchat"
     session_platform_id = "webchat"
     routing_debug: Dict[str, Any] = {}
     send_started_at = datetime.now(timezone.utc)
+    try:
+        images_list = _normalize_media_sources(images, field_name="images")
+        files_list = _normalize_media_sources(files, field_name="files")
+        videos_list = _normalize_media_sources(videos, field_name="videos")
+        records_list = _normalize_media_sources(records, field_name="records")
+    except ValueError as e:
+        return {
+            "status": "error",
+            "message": str(e),
+            "mode": mode,
+            "platform_id": session_platform_id,
+        }
 
     if message_chain is None:
         message_chain = []
         if message:
             message_chain.append({"type": "plain", "text": message})
-        for src in images or []:
+        for src in images_list:
             message_chain.append({"type": "image", "file_path": src})
-        for src in files or []:
+        for src in files_list:
             message_chain.append({"type": "file", "file_path": src})
-        for src in records or []:
+        for src in records_list:
             message_chain.append({"type": "record", "file_path": src})
-        for src in videos or []:
+        for src in videos_list:
             message_chain.append({"type": "video", "file_path": src})
 
     # 1. 确保有 session_id
@@ -154,7 +181,6 @@ async def send_platform_message(
                 "message": f"AstrBot API error: {e.response.status_code if hasattr(e, 'response') else 'Unknown'}",
                 "mode": mode,
                 "platform_id": session_platform_id,
-                "requested_platform_id": platform_id,
                 "base_url": client.base_url,
                 "detail": _httpx_error_detail(e),
             }
@@ -354,7 +380,7 @@ async def send_platform_message(
                     return {
                         "status": "error",
                         "message": f"AstrBot API error: {e.response.status_code if hasattr(e, 'response') else 'Unknown'}",
-                        "platform_id": platform_id,
+                        "platform_id": session_platform_id,
                         "session_id": used_session_id,
                         "base_url": client.base_url,
                         "detail": _httpx_error_detail(e),
@@ -364,7 +390,7 @@ async def send_platform_message(
                     return {
                         "status": "error",
                         "message": f"Invalid local file_path: {src!r}",
-                        "platform_id": platform_id,
+                        "platform_id": session_platform_id,
                         "session_id": used_session_id,
                         "part": dict(part),
                     }
@@ -374,7 +400,7 @@ async def send_platform_message(
                     return {
                         "status": "error",
                         "message": str(e),
-                        "platform_id": platform_id,
+                        "platform_id": session_platform_id,
                         "session_id": used_session_id,
                         "part": dict(part),
                         "hint": "Set ASTRBOTMCP_FILE_ROOT to control how relative paths are resolved.",
@@ -383,7 +409,7 @@ async def send_platform_message(
                     return {
                         "status": "error",
                         "message": f"Local file_path does not exist: {src!r}",
-                        "platform_id": platform_id,
+                        "platform_id": session_platform_id,
                         "session_id": used_session_id,
                         "part": dict(part),
                         "hint": "If you passed a relative path, set ASTRBOTMCP_FILE_ROOT (or run the server in the correct working directory).",
@@ -398,7 +424,7 @@ async def send_platform_message(
                     return {
                         "status": "error",
                         "message": f"AstrBot API error: {e.response.status_code if hasattr(e, 'response') else 'Unknown'}",
-                        "platform_id": platform_id,
+                        "platform_id": session_platform_id,
                         "session_id": used_session_id,
                         "base_url": client.base_url,
                         "detail": _httpx_error_detail(e),
@@ -440,7 +466,22 @@ async def send_platform_message(
             "message": "message_chain did not produce any valid message parts",
             "mode": mode,
             "platform_id": session_platform_id,
-            "requested_platform_id": platform_id,
+            "quote_debug": quote_debug,
+            "routing_debug": routing_debug,
+        }
+
+    has_content = any(
+        isinstance(part, dict)
+        and part.get("type") in ("plain", "image", "record", "file", "video")
+        for part in message_parts
+    )
+    if not has_content:
+        return {
+            "status": "error",
+            "message": "Message content is empty (reply-only is not allowed by WebUI API).",
+            "mode": mode,
+            "platform_id": session_platform_id,
+            "request_message_parts": message_parts,
             "quote_debug": quote_debug,
             "routing_debug": routing_debug,
         }
@@ -477,7 +518,6 @@ async def send_platform_message(
             ),
             "mode": mode,
             "platform_id": session_platform_id,
-            "requested_platform_id": platform_id,
             "session_id": used_session_id,
             "selected_provider": effective_provider,
             "selected_model": effective_model,
@@ -502,7 +542,6 @@ async def send_platform_message(
             "message": "AstrBot returned no SSE events for /api/chat/send",
             "mode": mode,
             "platform_id": session_platform_id,
-            "requested_platform_id": platform_id,
             "session_id": used_session_id,
             "selected_provider": effective_provider,
             "selected_model": effective_model,
@@ -544,7 +583,6 @@ async def send_platform_message(
             "warning": "No reply events were observed on the /api/chat/send SSE stream; check AstrBot logs if you expected an LLM reply.",
             "mode": mode,
             "platform_id": session_platform_id,
-            "requested_platform_id": platform_id,
             "session_id": used_session_id,
             "selected_provider": effective_provider,
             "selected_model": effective_model,
@@ -658,7 +696,6 @@ async def send_platform_message(
         "status": "ok",
         "mode": mode,
         "platform_id": session_platform_id,
-        "requested_platform_id": platform_id,
         "session_id": used_session_id,
         "conversation_id": used_session_id,
         "session_reused": session_reused,

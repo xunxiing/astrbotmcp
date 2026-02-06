@@ -402,6 +402,38 @@ class AstrBotClient:
         response = await self._request("POST", "/api/config/astrbot/update", json_body=payload)
         return response.json()
 
+    async def get_plugin_config(
+        self,
+        *,
+        plugin_name: str,
+    ) -> Dict[str, Any]:
+        """
+        Get plugin config via /api/config/get?plugin_name=<name>.
+        """
+        response = await self._request(
+            "GET",
+            "/api/config/get",
+            params={"plugin_name": plugin_name},
+        )
+        return response.json()
+
+    async def update_plugin_config(
+        self,
+        *,
+        plugin_name: str,
+        config: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Update plugin config via /api/config/plugin/update?plugin_name=<name>.
+        """
+        response = await self._request(
+            "POST",
+            "/api/config/plugin/update",
+            params={"plugin_name": plugin_name},
+            json_body=config,
+        )
+        return response.json()
+
     async def list_session_rules(
         self,
         *,
@@ -457,6 +489,40 @@ class AstrBotClient:
             params["force_refresh"] = "true"
         response = await self._request("GET", "/api/plugin/market_list", params=params or None)
         return response.json()
+
+    async def install_plugin_from_url(
+        self,
+        *,
+        url: str,
+        proxy: str | None = None,
+    ) -> Dict[str, Any]:
+        """
+        Install a plugin from repository URL via /api/plugin/install.
+        """
+        payload: Dict[str, Any] = {"url": url}
+        if proxy:
+            payload["proxy"] = proxy
+        response = await self._request("POST", "/api/plugin/install", json_body=payload)
+        return response.json()
+
+    async def install_plugin_from_file(
+        self,
+        file_path: str,
+    ) -> Dict[str, Any]:
+        """
+        Install a plugin from uploaded zip file via /api/plugin/install-upload.
+        """
+        send_name = os.path.basename(file_path)
+        with open(file_path, "rb") as f:
+            files = {
+                "file": (send_name, f, "application/zip"),
+            }
+            response = await self._request(
+                "POST",
+                "/api/plugin/install-upload",
+                files=files,
+            )
+            return response.json()
 
     # ---- Chat / platform session APIs --------------------------------
 
@@ -691,4 +757,53 @@ class AstrBotClient:
         Get AstrBot version via /api/stat/version.
         """
         response = await self._request("GET", "/api/stat/version")
+        return response.json()
+
+    # ---- MCP panel APIs ----------------------------------------------
+
+    async def get_mcp_servers(self) -> Dict[str, Any]:
+        """
+        Get MCP server list from panel API /api/tools/mcp/servers.
+        """
+        response = await self._request("GET", "/api/tools/mcp/servers")
+        return response.json()
+
+    async def add_mcp_server(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Add MCP server via panel API /api/tools/mcp/add.
+        """
+        response = await self._request("POST", "/api/tools/mcp/add", json_body=payload)
+        return response.json()
+
+    async def update_mcp_server(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Update MCP server via panel API /api/tools/mcp/update.
+        """
+        response = await self._request("POST", "/api/tools/mcp/update", json_body=payload)
+        return response.json()
+
+    async def delete_mcp_server(self, *, name: str) -> Dict[str, Any]:
+        """
+        Delete MCP server via panel API /api/tools/mcp/delete.
+        """
+        response = await self._request(
+            "POST",
+            "/api/tools/mcp/delete",
+            json_body={"name": name},
+        )
+        return response.json()
+
+    async def test_mcp_server_connection(
+        self,
+        *,
+        mcp_server_config: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Test MCP connection via panel API /api/tools/mcp/test.
+        """
+        response = await self._request(
+            "POST",
+            "/api/tools/mcp/test",
+            json_body={"mcp_server_config": mcp_server_config},
+        )
         return response.json()

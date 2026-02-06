@@ -247,21 +247,6 @@ AstrBot 已经内置了 MCP 客户端管理逻辑（参见 `routes/tools.py`）�
 - `reply_events` 来自 AstrBot 的 SSE；如果 SSE 的 `data:` 不是 JSON，MCP 会以 `{"type":"raw","data":"..."}` 的形式保留（避免“无事件 -> 误判失败”）。
 - 当 `/api/chat/send` 报错或返回事件异常时，MCP 会附带 `astrbot_logs_tail`（来自 `/api/log-history`）帮助定位插件/模型侧错误；但如果插件使用 `print()` 而非 AstrBot `logger`，这些输出通常不会进入 `/api/log-history`。
 
-### 3.1 `send_platform_message_direct`
-
-- 用途：绕过 LLM，直接调用 AstrBot 的平台适配器接口 `/api/platform/send_message` 给指定群/好友发送消息链。
-- 主要参数：
-  - `platform_id`：平台 ID；
-  - `target_id`：群号/用户 ID；
-  - `message_type`：`"GroupMessage"` 或 `"FriendMessage"`；
-  - `message_chain`（可选）或 `message` / `images` / `files` / `videos` / `records`（可选）：消息内容。
-
-注意：`send_platform_message_direct` 是“直接给平台群/好友发消息”（不是 WebChat）。
-
-- 媒体段如果传入本地 `file_path`（例如 `D:\...`），MCP 默认会优先把“本地绝对路径”直接转发给平台适配器（对 Napcat/QQ 这类更兼容本地路径的实现更稳）。
-- 如需强制“先上传到 AstrBot，再发送 URL”，可设置环境变量 `ASTRBOTMCP_DIRECT_MEDIA_MODE=upload`；默认 `auto` 会先尝试 `local`，失败再回退到 `upload`。
-- 如果你直接传入 http(s) URL（通过 `url` 或 `file_path`），则会原样转发。
-
 ### 4. `restart_astrbot`
 
 - 无参数；

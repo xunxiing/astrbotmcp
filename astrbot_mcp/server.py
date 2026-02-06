@@ -15,6 +15,7 @@ server = FastMCP(
         "MCP server for interacting with an existing AstrBot instance. "
         "Provides tools to read logs, list configured message platforms, "
         "send message chains (including files) via the web chat API, "
+        "install/configure plugins, manage MCP panel config, "
         "restart AstrBot core, read platform session message history, "
         "and browse the AstrBot plugin market."
     ),
@@ -23,7 +24,6 @@ server = FastMCP(
 # Register tools with FastMCP
 server.tool(astrbot_tools.get_astrbot_logs, name="get_astrbot_logs")
 server.tool(astrbot_tools.get_message_platforms, name="get_message_platforms")
-server.tool(astrbot_tools.send_platform_message_direct, name="send_platform_message_direct")
 server.tool(astrbot_tools.send_platform_message, name="send_platform_message")
 server.tool(astrbot_tools.restart_astrbot, name="restart_astrbot")
 server.tool(
@@ -31,6 +31,12 @@ server.tool(
     name="get_platform_session_messages",
 )
 server.tool(astrbot_tools.browse_plugin_market, name="browse_plugin_market")
+server.tool(astrbot_tools.install_astrbot_plugin, name="install_astrbot_plugin")
+server.tool(
+    astrbot_tools.configure_astrbot_plugin_json,
+    name="configure_astrbot_plugin_json",
+)
+server.tool(astrbot_tools.manage_mcp_config_panel, name="manage_mcp_config_panel")
 server.tool(astrbot_tools.list_astrbot_config_files, name="list_astrbot_config_files")
 server.tool(astrbot_tools.inspect_astrbot_config, name="inspect_astrbot_config")
 server.tool(astrbot_tools.apply_astrbot_config_ops, name="apply_astrbot_config_ops")
@@ -49,10 +55,12 @@ def astrbot_info():
             "get_astrbot_logs",
             "get_message_platforms",
             "send_platform_message",
-            "send_platform_message_direct",
             "restart_astrbot",
             "get_platform_session_messages",
             "browse_plugin_market",
+            "install_astrbot_plugin",
+            "configure_astrbot_plugin_json",
+            "manage_mcp_config_panel",
             "list_astrbot_config_files",
             "inspect_astrbot_config",
             "apply_astrbot_config_ops",

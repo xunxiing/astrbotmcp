@@ -98,6 +98,7 @@ npm install -g astrbotmcp
 | `ASTRBOT_PASSWORD` | Dashboard 密码 | - |
 | `ASTRBOT_LOG_LEVEL` | 日志级别 | `INFO` |
 | `ASTRBOTMCP_DISABLE_PROXY` | 是否禁用代理（防止本地请求被代理拦截） | `true` |
+| `ASTRBOTMCP_PLUGIN_PROXY` | 插件 URL 安装默认代理前缀（`install_astrbot_plugin`） | `https://gh-proxy.com` |
 
 #### 代理配置说明
 
@@ -147,13 +148,18 @@ npm install -g astrbotmcp
 
 #### 消息工具
 
-- `send_platform_message` - 通过 Web Chat API 发送消息链
-- `send_platform_message_direct` - 直接发送到平台（绕过 LLM）
+- `send_platform_message` - 通过 Web Chat API 发送消息链（仅 WebUI）
 - `get_platform_session_messages` - 读取会话消息历史
 
 #### 插件市场
 
 - `browse_plugin_market` - 浏览插件市场（搜索/排序）
+- `install_astrbot_plugin` - Install plugin via URL or local zip path (proxy enabled by default)
+- `configure_astrbot_plugin_json` - Configure plugin JSON by reusing AstrBot config ops
+
+#### MCP 面板
+
+- `manage_mcp_config_panel` - Access MCP panel APIs (`list` / `add` / `update` / `delete` / `test`)
 
 ---
 

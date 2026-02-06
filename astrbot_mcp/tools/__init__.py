@@ -20,11 +20,12 @@ from .control_tools import restart_astrbot
 from .log_tools import get_astrbot_logs
 from .message import (
     send_platform_message,
-    send_platform_message_direct,
 )
 from .platform_tools import get_message_platforms
 from .session_tools import get_platform_session_messages
 from .plugin_market_tools import browse_plugin_market
+from .plugin_admin_tools import install_astrbot_plugin, configure_astrbot_plugin_json
+from .mcp_panel_tools import manage_mcp_config_panel
 from .config_tools import (
     list_astrbot_config_files,
     inspect_astrbot_config,
@@ -40,7 +41,6 @@ from .helpers import (
     _as_file_uri,
     _attachment_download_url,
     _astrbot_connect_hint,
-    _direct_media_mode,
     _httpx_error_detail,
     _resolve_local_file_path,
 )
@@ -49,11 +49,13 @@ __all__ = [
     # 工具函数
     "get_astrbot_logs",
     "get_message_platforms",
-    "send_platform_message_direct",
     "send_platform_message",
     "restart_astrbot",
     "get_platform_session_messages",
     "browse_plugin_market",
+    "install_astrbot_plugin",
+    "configure_astrbot_plugin_json",
+    "manage_mcp_config_panel",
     "list_astrbot_config_files",
     "inspect_astrbot_config",
     "apply_astrbot_config_ops",
@@ -67,6 +69,5 @@ __all__ = [
     "_attachment_download_url",
     "_astrbot_connect_hint",
     "_httpx_error_detail",
-    "_direct_media_mode",
     "_as_file_uri",
 ]

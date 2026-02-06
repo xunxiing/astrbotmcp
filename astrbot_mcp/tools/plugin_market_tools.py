@@ -92,6 +92,33 @@ def _matches_query(item: Dict[str, Any], query: str) -> bool:
     return True
 
 
+def _plugin_url(item: Dict[str, Any]) -> str | None:
+    # AstrBot plugin market convention: repository is stored in `repo`.
+    for key in ("repo", "url", "homepage", "website", "source"):
+        raw = item.get(key)
+        if raw is None:
+            continue
+        s = str(raw).strip()
+        if not s:
+            continue
+
+        s = s.removeprefix("git+")
+        if s.startswith("git@github.com:"):
+            s = "https://github.com/" + s.split("git@github.com:", 1)[1]
+        elif s.startswith("github.com/"):
+            s = "https://" + s
+        elif "://" not in s:
+            if s.count("/") == 1 and " " not in s and not s.startswith("/"):
+                s = "https://github.com/" + s
+            elif "." in s.split("/", 1)[0]:
+                s = "https://" + s
+
+        if s.endswith(".git"):
+            s = s[:-4]
+        return s
+    return None
+
+
 async def _fetch_default_registry(timeout: float = 30.0) -> Dict[str, Any]:
     url = "https://api.soulter.top/astrbot/plugins"
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
@@ -194,6 +221,7 @@ async def browse_plugin_market(
                 "tags": [str(t) for t in tags],
                 "stars": _as_int(it.get("stars") or it.get("star") or 0),
                 "updated_at": it.get("updated_at"),
+                "url": _plugin_url(it),
             }
         )
 
