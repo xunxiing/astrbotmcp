@@ -4,7 +4,6 @@
 
 > **AstrBot 无法通过 MCP 控制自身。本项目填补了这一空白,为Astrbot开发者提供AI AGENT时代调试插件的自动化工具**
 
-
 ⚠️ **本项目提供的是运维级控制能力，使用时请注意：**
 
 1. **重启风险** - `restart_astrbot` 会中断所有正在进行的对话
@@ -18,9 +17,6 @@
 
 #### 安装
 
-<details>
-<summary>通过 PyPI 或 uv 安装</summary>
-
 ```bash
 # 通过 PyPI 安装（推荐）
 pip install astrbotmcp
@@ -29,7 +25,8 @@ pip install astrbotmcp
 uv add astrbotmcp
 ```
 
-安装完成后，您可以通过以下方式在 MCP 客户端中配置：
+<details>
+<summary>通过 PyPI 或 uv 安装</summary>
 
 ```json
 {
@@ -52,6 +49,8 @@ uv add astrbotmcp
 }
 ```
 
+安装完成后，您可以通过以下方式在 MCP 客户端中配置：
+
 </details>
 
 <details>
@@ -72,7 +71,8 @@ npm install -g astrbotmcp
     "astrbot-mcp": {
       "command": "npx",
       "args": [
-        "astrbotmcp"
+        "-y", 
+        "@xunxiing/astrbot-mcp@latest"
       ],
       "env": {
         "ASTRBOT_BASE_URL": "http://127.0.0.1:6185",
@@ -87,18 +87,17 @@ npm install -g astrbotmcp
 
 </details>
 
-
 #### 环境变量说明
 
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `ASTRBOT_BASE_URL` | AstrBot Dashboard 地址 | `http://127.0.0.1:6185` |
-| `ASTRBOT_TIMEOUT` | HTTP 请求超时时间 | `30` |
-| `ASTRBOT_USERNAME` | Dashboard 用户名 | - |
-| `ASTRBOT_PASSWORD` | Dashboard 密码 | - |
-| `ASTRBOT_LOG_LEVEL` | 日志级别 | `INFO` |
-| `ASTRBOTMCP_DISABLE_PROXY` | 是否禁用代理（防止本地请求被代理拦截） | `true` |
-| `ASTRBOTMCP_PLUGIN_PROXY` | 插件 URL 安装默认代理前缀（`install_astrbot_plugin`） | `https://gh-proxy.com` |
+| 变量                         | 说明                                                    | 默认值                    |
+| ---------------------------- | -------------------------------------------------------| ------------------------- |
+| `ASTRBOT_BASE_URL`         | AstrBot Dashboard 地址                                    | `http://127.0.0.1:6185` |
+| `ASTRBOT_TIMEOUT`          | HTTP 请求超时时间                                           | `30`                    |
+| `ASTRBOT_USERNAME`         | Dashboard 用户名                                        | -                         |
+| `ASTRBOT_PASSWORD`         | Dashboard 密码                                          | -                         |
+| `ASTRBOT_LOG_LEVEL`        | 日志级别                                                | `INFO`                  |
+| `ASTRBOTMCP_DISABLE_PROXY` | 是否禁用代理（防止本地请求被代理拦截）                  | `true`                  |
+| `ASTRBOTMCP_PLUGIN_PROXY`  | 插件 URL 安装默认代理前缀（`install_astrbot_plugin`） | `https://gh-proxy.com`  |
 
 #### 代理配置说明
 
@@ -235,4 +234,3 @@ uv run --project . astrbot-mcp
 ### 许可证
 
 MIT License - 详见 [LICENSE](LICENSE.txt) 文件。
-
