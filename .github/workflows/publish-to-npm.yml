@@ -7,7 +7,6 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
-
     permissions:
       contents: read
 
@@ -17,28 +16,25 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Node.js
+      - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Extract version from release tag
-        id: get_version
-        run: |
-          VERSION=${GITHUB_REF#refs/tags/}
-          VERSION=${VERSION#v}
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Release version: $VERSION"
+      - name: Install dependencies
+        run: npm ci
 
-      - name: Update package.json version (no git tag)
-        working-directory: astrbot-mcp-npx
+      - name: Build
+        run: npm run build
+
+      - name: Align package version with release tag
         run: |
-          npm version "${{ steps.get_version.outputs.version }}" --no-git-tag-version
+          VERSION="${GITHUB_REF#refs/tags/}"
+          VERSION="${VERSION#v}"
+          npm version "$VERSION" --no-git-tag-version
 
       - name: Publish
-        working-directory: astrbot-mcp-npx
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          npm publish --access public
+        run: npm publish --access public

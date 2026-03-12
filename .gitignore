@@ -6,6 +6,10 @@ dist/
 wheels/
 *.egg-info
 
+# Node-generated files
+node_modules/
+*.tsbuildinfo
+
 # Virtual environments
 .venv
 venv/

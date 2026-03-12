@@ -1,236 +1,93 @@
-## AstrBot MCP
+﻿# AstrBot MCP (Node/TypeScript)
 
-[![MCP Badge](https://lobehub.com/badge/mcp/xunxiing-astrbotmcp)](https://lobehub.com/mcp/xunxiing-astrbotmcp)
+MCP server for operating AstrBot through:
 
-> **AstrBot 无法通过 MCP 控制自身。本项目填补了这一空白,为Astrbot开发者提供AI AGENT时代调试插件的自动化工具**
+- AstrBot REST Gateway (`astrbot_plugin_mcp_tools`) at `http://127.0.0.1:6324`
 
-⚠️ **本项目提供的是运维级控制能力，使用时请注意：**
+This project is a full rewrite in Node + TypeScript.
 
-1. **重启风险** - `restart_astrbot` 会中断所有正在进行的对话
-2. **权限管理** - 确保 MCP 客户端的访问权限受控
-3. **生产环境** - 建议仅在开发/测试环境使用控制面功能
-4. **数据安全** - 日志可能包含敏感信息，注意脱敏处理
-
-### **本项目与 AstrBot 官方无直接关联，由社区独立维护。**
-
-### 快速开始
-
-#### 安装
+## Install
 
 ```bash
-# 通过 PyPI 安装（推荐）
-pip install astrbotmcp
-
-# 或通过 uv
-uv add astrbotmcp
+npm install
+npm run build
 ```
 
-<details>
-<summary>通过 PyPI 或 uv 安装</summary>
+## Run
+
+```bash
+node dist/src/index.js
+```
+
+or in development:
+
+```bash
+npm run dev
+```
+
+## MCP config example
 
 ```json
 {
   "mcpServers": {
     "astrbot-mcp": {
-      "command": "uvx",
-      "args": [
-        "--from",
-        "astrbotmcp",
-        "astrbot-mcp"
-      ],
+      "command": "node",
+      "args": ["D:/绋嬪簭/astrbotmcp/dist/src/index.js"],
       "env": {
-        "ASTRBOT_BASE_URL": "http://127.0.0.1:6185",
-        "ASTRBOT_TIMEOUT": "30",
-        "ASTRBOT_USERNAME": "your_username",
-        "ASTRBOT_PASSWORD": "your_password"
+        "ASTRBOT_GATEWAY_URL": "http://127.0.0.1:6324",
+        "ASTRBOT_GATEWAY_TOKEN": "iaushdqwuikdwq78ui"
       }
     }
   }
 }
 ```
 
-安装完成后，您可以通过以下方式在 MCP 客户端中配置：
+## Environment variables
 
-</details>
+Required:
 
-<details>
-<summary>通过 npm 安装（需要先安装 npm）</summary>
+- `ASTRBOT_GATEWAY_TOKEN`
 
-> 注意：npm 安装方式需要您先在系统中安装 Node.js 和 npm。
+Optional:
 
-```bash
-# 通过 npm 安装
-npm install -g astrbotmcp
-```
+- `ASTRBOT_GATEWAY_URL` (default: `http://127.0.0.1:6324`)
+- `ASTRBOT_GATEWAY_TIMEOUT` (default: `30000`, milliseconds)
+- `ASTRBOT_CAPABILITY_MODE` (`search` | `readonly` | `minimize` | `full`, default: `full`)
+- `ASTRBOT_ENABLE_SEARCH_TOOLS` (`false` by default)
+- `ASTRBOT_LOG_VIEW` (`compact` by default, or `raw`)
+- `ASTRBOT_ENABLE_LOG_NOISE_FILTERING` (`true` by default)
 
-安装完成后，您可以通过以下方式在 MCP 客户端中配置：
+## Tool groups
 
-```json
-{
-  "mcpServers": {
-    "astrbot-mcp": {
-      "command": "npx",
-      "args": [
-        "-y", 
-        "@xunxiing/astrbot-mcp@latest"
-      ],
-      "env": {
-        "ASTRBOT_BASE_URL": "http://127.0.0.1:6185",
-        "ASTRBOT_TIMEOUT": "30",
-        "ASTRBOT_USERNAME": "your_username",
-        "ASTRBOT_PASSWORD": "your_password"
-      }
-    }
-  }
-}
-```
+- system: status, compact logs, logs by id, restart
+- platforms: list, stats, details
+- providers: list, current, details
+- configs: inspect core/plugin, search, patch core/plugin
+- plugins: list/details/install/enable/disable/reload/update/uninstall
+- messages: trigger replies, recent sessions, history
+- astrbot_tools: list/details/invoke
+- mcp_servers: list/register/update/uninstall/test
+- personas: list/details/upsert/delete
+- skills: list/install/toggle/delete
+- subagents: list/config inspect/config update
+- cron: list/upsert/delete
+- discovery: `search_tools` (only when `ASTRBOT_ENABLE_SEARCH_TOOLS=true`)
 
-</details>
+## Safety defaults
 
-#### 环境变量说明
+- `capabilityMode=full` by default (as requested)
+- `search_tools` is disabled by default
+- logs return compact/noise-filtered output by default
+- restart and logs use the gateway only; no separate dashboard auth is required
 
-| 变量                         | 说明                                                    | 默认值                    |
-| ---------------------------- | -------------------------------------------------------| ------------------------- |
-| `ASTRBOT_BASE_URL`         | AstrBot Dashboard 地址                                    | `http://127.0.0.1:6185` |
-| `ASTRBOT_TIMEOUT`          | HTTP 请求超时时间                                           | `30`                    |
-| `ASTRBOT_USERNAME`         | Dashboard 用户名                                        | -                         |
-| `ASTRBOT_PASSWORD`         | Dashboard 密码                                          | -                         |
-| `ASTRBOT_LOG_LEVEL`        | 日志级别                                                | `INFO`                  |
-| `ASTRBOTMCP_DISABLE_PROXY` | 是否禁用代理（防止本地请求被代理拦截）                  | `true`                  |
-| `ASTRBOTMCP_PLUGIN_PROXY`  | 插件 URL 安装默认代理前缀（`install_astrbot_plugin`） | `https://gh-proxy.com`  |
+## Scripts
 
-#### 代理配置说明
+- `npm run check` - type check
+- `npm run build` - build to `dist/`
+- `npm run dev` - run directly from TypeScript
 
-如果你在使用代理工具（如 Clash、V2Ray 等），可能会遇到 502 Bad Gateway 错误，这是因为本地请求被代理拦截导致的。
+## Message semantics
 
-**解决方案：**
-
-1. **默认行为**：AstrBot MCP 默认禁用代理（`ASTRBOTMCP_DISABLE_PROXY=true`），确保本地请求直接发送到 AstrBot。
-2. **如果需要使用代理**：设置 `ASTRBOTMCP_DISABLE_PROXY=false`，但请注意这可能导致本地 API 请求失败。
-3. **推荐配置**：对于本地 AstrBot 实例，始终禁用代理：
-
-```json
-{
-  "mcpServers": {
-    "astrbot-mcp": {
-      "command": "uvx",
-      "args": [
-        "--from",
-        "astrbotmcp",
-        "astrbot-mcp"
-      ],
-      "env": {
-        "ASTRBOT_BASE_URL": "http://127.0.0.1:6185",
-        "ASTRBOTMCP_DISABLE_PROXY": "true"
-      }
-    }
-  }
-}
-```
-
----
-
-### 可用 MCP Tools
-
-#### 控制面工具
-
-- `restart_astrbot` - 重启 AstrBot Core
-- `get_astrbot_logs` - 获取实时/历史日志
-- `get_message_platforms` - 列出已配置的消息平台
-
-#### 配置工具
-
-- `list_astrbot_config_files` - 列出所有 AstrBot 配置文件（`/api/config/abconfs`）
-- `inspect_astrbot_config` - 分层查看 JSON 配置节点（key / array length / value）
-- `apply_astrbot_config_ops` - 批量 `set` / `add_key` / `append`，并自动保存 + 热重载（`/api/config/astrbot/update`）
-- `search_astrbot_config_paths` - 按 key（可选再按 value）搜索配置，返回匹配项的路径（不返回大段内容）
-
-#### 消息工具
-
-- `send_platform_message` - 通过 Web Chat API 发送消息链（仅 WebUI；无需 `platform_id` / `target_id`）
-- `get_platform_session_messages` - 读取会话消息历史
-
-#### 插件市场
-
-- `browse_plugin_market` - 浏览插件市场（搜索/排序）
-- `install_astrbot_plugin` - Install plugin via URL or local zip path (proxy enabled by default)
-- `configure_astrbot_plugin_json` - Configure plugin JSON by reusing AstrBot config ops
-
-#### MCP 面板
-
-- `manage_mcp_config_panel` - Access MCP panel APIs (`list` / `add` / `update` / `delete` / `test`)
-
----
-
-### 使用示例
-
-#### 在 Agent 中重启 AstrBot
-
-```python
-# Agent 可以直接调用
-restart_astrbot()
-```
-
-#### 监控 AstrBot 日志
-
-```python
-# 实时获取最新日志
-logs = get_astrbot_logs(wait_seconds=10)
-```
-
-#### 发送消息到指定平台
-
-```python
-# 发送带图片的消息链
-send_platform_message(
-    message="Hello from MCP",
-    images=["/path/to/image.png"]
-)
-```
-
-```python
-# 插件命令请直接发送纯文本，不要命令前缀
-send_platform_message(
-    message="抽老婆帮助"
-)
-```
-
----
-
-### 技术架构
-
-```
-┌─────────────────┐      HTTP API      ┌──────────────────┐
-│   MCP Client    │───────────────────>│  astrbot-mcp     │
-│ (Cursor/Cline)  │   (MCP Protocol)   │  (FastMCP Server)│
-└─────────────────┘                    └────────┬─────────┘
-                                                │
-                                                │ HTTP
-                                                ↓
-┌─────────────────┐                    ┌──────────────────┐
-│   AstrBot Core  │<───────────────────│  AstrBot         │
-│   + Plugins     │   (Dashboard API)  │  Dashboard       │
-└─────────────────┘                    └──────────────────┘
-```
-
----
-
-### 开发与贡献
-
-```bash
-# 克隆项目
-git clone https://github.com/yourusername/astrbot-mcp.git
-cd astrbot-mcp
-
-# 安装依赖
-uv sync
-
-# 本地运行
-uv run --project . astrbot-mcp
-```
-
----
-
-### 许可证
-
-MIT License - 详见 [LICENSE](LICENSE.txt) 文件。
+- `trigger_message_reply`: injects an inbound message through `/events/injections/message`, optionally overrides the target LLM provider/model/streaming flags, waits for the event to settle, and by default returns only the bot reply text. Internal metadata is hidden unless `include_debug=true`.
+- `trigger_message_reply` accepts `include_logs=false` when you want a low-context response but still keep the send-and-wait behavior.
+- `get_message_history`: for `webchat`, use `conversation_id` or `target_id`; do not pass the sender id as `user_id`.

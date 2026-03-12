@@ -6,62 +6,30 @@ on:
   workflow_dispatch:
 
 jobs:
-  test-build:
-    name: Test & Build (py${{ matrix.python-version }} on ${{ matrix.os }})
+  build:
+    name: Build (node ${{ matrix.node-version }} on ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
-
-    defaults:
-      run:
-        shell: bash
+        node-version: ["20", "22"]
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
+          node-version: ${{ matrix.node-version }}
+          cache: npm
 
-      - name: Install project (with test deps)
-        run: |
-          python -m pip install -U pip
-          python -m pip install -e ".[test]"
+      - name: Install dependencies
+        run: npm ci
 
-      - name: Run tests
-        run: |
-          pytest -q
+      - name: Type check
+        run: npm run check
 
-      - name: Build wheel/sdist
-        run: |
-          python -m build
-
-      - name: Install built wheel and smoke-test
-        run: |
-          VENV_DIR="$PWD/.venv-wheel"
-          python -m venv "$VENV_DIR"
-          if [[ -x "$VENV_DIR/bin/python" ]]; then
-            VENV_PY="$VENV_DIR/bin/python"
-          elif [[ -x "$VENV_DIR/Scripts/python.exe" ]]; then
-            VENV_PY="$VENV_DIR/Scripts/python.exe"
-          else
-            VENV_PY="$VENV_DIR/Scripts/python"
-          fi
-
-          "$VENV_PY" -m pip install -U pip
-          "$VENV_PY" -m pip install dist/*.whl
-
-          SMOKE_DIR="$(mktemp -d)"
-          pushd "$SMOKE_DIR" >/dev/null
-          "$VENV_PY" -c "import astrbot_mcp.server, astrbot_mcp.tools; print('import-ok')"
-
-          "$VENV_PY" -c "import shutil, sys; sys.exit(0 if shutil.which('astrbot-mcp') else 1)"
-          "$VENV_PY" -m astrbot_mcp.server --version
-          "$VENV_PY" -m astrbot_mcp.server --help >/dev/null
-          popd >/dev/null
+      - name: Build
+        run: npm run build

@@ -1,0 +1,51 @@
+{
+  "name": "@xunxiing/astrbot-mcp",
+  "version": "0.2.0",
+  "description": "AstrBot MCP server backed by the AstrBot REST gateway.",
+  "type": "module",
+  "bin": {
+    "astrbot-mcp": "./dist/src/index.js"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE.txt"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx src/index.ts",
+    "test": "tsx --test test/**/*.test.ts"
+  },
+  "keywords": [
+    "astrbot",
+    "mcp",
+    "model-context-protocol",
+    "typescript"
+  ],
+  "author": "xunxiing",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xunxiing/astrbot-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/xunxiing/astrbot-mcp/issues"
+  },
+  "homepage": "https://github.com/xunxiing/astrbot-mcp#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}
