@@ -5,6 +5,7 @@ import {
   compactPluginConfigPayload,
   compactPluginDetailsPayload,
   compactPluginListPayload,
+  resolveGitHubAcceleration,
 } from "../src/plugin-tools.js";
 
 test("compactPluginListPayload removes handler noise and keeps plugin summary", () => {
@@ -104,4 +105,41 @@ test("compactPluginConfigPayload returns full config object for editing", () => 
     config: { token: "secret", enable: true },
     schema: { token: { type: "string" } },
   });
+});
+
+test("resolveGitHubAcceleration keeps explicit override and trims slash", async () => {
+  const result = await resolveGitHubAcceleration({
+    explicit: "https://gh-proxy.com/  ",
+    probe: async () => {
+      throw new Error("probe should not run for explicit override");
+    },
+  });
+
+  assert.equal(result, "https://gh-proxy.com");
+});
+
+test("resolveGitHubAcceleration supports explicit disable", async () => {
+  const result = await resolveGitHubAcceleration({
+    explicit: "off",
+    probe: async () => {
+      throw new Error("probe should not run when disabled explicitly");
+    },
+  });
+
+  assert.equal(result, "");
+});
+
+test("resolveGitHubAcceleration auto-selects first reachable candidate", async () => {
+  const probed: string[] = [];
+  const result = await resolveGitHubAcceleration({
+    refresh: true,
+    candidates: ["https://bad.example", "https://good.example"],
+    probe: async (baseUrl) => {
+      probed.push(baseUrl);
+      return baseUrl === "https://good.example";
+    },
+  });
+
+  assert.equal(result, "https://good.example");
+  assert.deepEqual(probed, ["https://bad.example", "https://good.example"]);
 });

@@ -8,6 +8,29 @@ import {
 } from "./tooling.js";
 import { redactSensitiveData } from "./utils.js";
 
+const DEFAULT_GITHUB_ACCELERATION_BASES = [
+  "https://edgeone.gh-proxy.com",
+  "https://hk.gh-proxy.com",
+  "https://gh-proxy.com",
+  "https://gh.llkk.cc",
+];
+
+const GITHUB_ACCELERATION_DISABLE_VALUES = new Set([
+  "0",
+  "false",
+  "no",
+  "none",
+  "off",
+  "direct",
+  "disable",
+  "disabled",
+]);
+
+const GITHUB_ACCELERATION_TEST_URL =
+  "https://github.com/AstrBotDevs/AstrBot/raw/refs/heads/master/.python-version";
+
+let cachedGitHubAcceleration: string | null | undefined;
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
@@ -27,6 +50,79 @@ function compactObject(record: Record<string, unknown>) {
     compacted[key] = value;
   }
   return compacted;
+}
+
+function normalizeGitHubAcceleration(value?: string | null) {
+  return typeof value === "string" ? value.trim().replace(/\/+$/, "") : "";
+}
+
+function isDisabledGitHubAcceleration(value: string) {
+  return GITHUB_ACCELERATION_DISABLE_VALUES.has(value.trim().toLowerCase());
+}
+
+function asNonEmptyString(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
+function looksLikeGitHubRepoUrl(value: string) {
+  return /^https?:\/\/github\.com\//i.test(value.trim());
+}
+
+async function probeGitHubAcceleration(baseUrl: string, timeoutMs = 5_000) {
+  const normalized = normalizeGitHubAcceleration(baseUrl);
+  if (!normalized) {
+    return false;
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${normalized}/${GITHUB_ACCELERATION_TEST_URL}`, {
+      method: "GET",
+      redirect: "follow",
+      signal: controller.signal,
+    });
+    return response.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function resolveGitHubAcceleration(options: {
+  explicit?: string;
+  refresh?: boolean;
+  candidates?: string[];
+  probe?: (baseUrl: string) => Promise<boolean>;
+} = {}) {
+  const explicit = normalizeGitHubAcceleration(options.explicit);
+  if (explicit) {
+    return isDisabledGitHubAcceleration(explicit) ? "" : explicit;
+  }
+
+  const envOverride = normalizeGitHubAcceleration(process.env.ASTRBOT_GITHUB_ACCELERATION);
+  if (envOverride) {
+    return isDisabledGitHubAcceleration(envOverride) ? "" : envOverride;
+  }
+
+  if (!options.refresh && cachedGitHubAcceleration !== undefined) {
+    return cachedGitHubAcceleration ?? "";
+  }
+
+  const probe = options.probe ?? probeGitHubAcceleration;
+  for (const candidate of options.candidates ?? DEFAULT_GITHUB_ACCELERATION_BASES) {
+    const normalized = normalizeGitHubAcceleration(candidate);
+    if (!normalized) {
+      continue;
+    }
+    if (await probe(normalized)) {
+      cachedGitHubAcceleration = normalized;
+      return normalized;
+    }
+  }
+
+  cachedGitHubAcceleration = null;
+  return "";
 }
 
 function compactCommand(handler: unknown): Record<string, unknown> | null {
@@ -158,6 +254,43 @@ export function compactPluginConfigPayload(
     plugin: typeof record.plugin === "string" ? record.plugin : null,
     config: configValue,
     schema: schemaValue,
+  });
+}
+
+function compactPluginInstallResult(
+  payload: unknown,
+  options: { sourceType: string; githubAcceleration?: string } = { sourceType: "auto" },
+) {
+  const record = asRecord(payload);
+  return compactObject({
+    name: asNonEmptyString(record?.name),
+    repo: asNonEmptyString(record?.repo),
+    source_type: options.sourceType,
+    github_acceleration: options.githubAcceleration || null,
+  });
+}
+
+function compactPluginMutationResult(
+  payload: unknown,
+  options: { pluginName?: string; githubAcceleration?: string } = {},
+) {
+  const record = asRecord(payload);
+  return compactObject({
+    plugin:
+      asNonEmptyString(record?.plugin) ||
+      asNonEmptyString(record?.name) ||
+      options.pluginName ||
+      null,
+    enabled: typeof record?.enabled === "boolean" ? record.enabled : null,
+    reloaded: typeof record?.reloaded === "boolean" ? record.reloaded : null,
+    updated: typeof record?.updated === "boolean" ? record.updated : null,
+    deleted:
+      typeof record?.deleted === "boolean"
+        ? record.deleted
+        : typeof record?.uninstalled === "boolean"
+          ? record.uninstalled
+          : null,
+    github_acceleration: options.githubAcceleration || null,
   });
 }
 
@@ -314,7 +447,7 @@ export function registerPluginTools(registrar: ToolRegistrar) {
     registrar,
     {
       name: "install_plugin",
-      summary: "Install plugin from repo URL, gateway-visible zip path, or explicit uploaded zip file.",
+      summary: "Install plugin from repo URL, gateway-visible zip path, or uploaded zip file. GitHub repo installs automatically use a reachable GitHub acceleration prefix by default. `github_acceleration` is the preferred override; `proxy` is a deprecated alias.",
       category: "plugins",
       minMode: "full",
       risk: "destructive",
@@ -323,9 +456,10 @@ export function registerPluginTools(registrar: ToolRegistrar) {
     {
       source: z.string().min(1).describe("Repo URL, gateway-visible zip path, or local zip file path."),
       source_type: z.enum(["auto", "repo", "zip", "upload"]).default("auto").describe("auto: repo URL -> repo install; existing local path on loopback gateway -> zip path install; existing local path on remote gateway -> upload; zip: force gateway path install; upload: force multipart file upload."),
-      proxy: z.string().optional(),
+      github_acceleration: z.string().optional().describe("Optional GitHub acceleration base URL. Use `off` to disable auto acceleration for this call."),
+      proxy: z.string().optional().describe("Deprecated alias of github_acceleration."),
     },
-    async ({ source, source_type, proxy }) => {
+    async ({ source, source_type, github_acceleration, proxy }) => {
       const looksLikeRepo = /^https?:\/\//i.test(source) || source.endsWith(".git");
       const sourceExists = existsSync(source);
       const type =
@@ -340,8 +474,15 @@ export function registerPluginTools(registrar: ToolRegistrar) {
           : source_type;
 
       if (type === "repo") {
-        return runtime.gateway.request("POST", "/plugins/install/repo", {
-          body: { repo_url: source, proxy: proxy ?? "" },
+        const resolvedAcceleration = looksLikeGitHubRepoUrl(source)
+          ? await resolveGitHubAcceleration({ explicit: github_acceleration ?? proxy })
+          : normalizeGitHubAcceleration(github_acceleration ?? proxy);
+        const payload = await runtime.gateway.request("POST", "/plugins/install/repo", {
+          body: { repo_url: source, proxy: resolvedAcceleration },
+        });
+        return compactPluginInstallResult(payload, {
+          sourceType: type,
+          githubAcceleration: resolvedAcceleration,
         });
       }
 
@@ -349,12 +490,22 @@ export function registerPluginTools(registrar: ToolRegistrar) {
         if (!sourceExists) {
           throw new Error("local plugin zip file not found for upload install.");
         }
-        return runtime.gateway.uploadFile("/plugins/install/upload", source);
+        return compactPluginInstallResult(
+          await runtime.gateway.uploadFile("/plugins/install/upload", source),
+          {
+            sourceType: type,
+          },
+        );
       }
 
-      return runtime.gateway.request("POST", "/plugins/install/zip", {
-        body: { zip_file_path: source },
-      });
+      return compactPluginInstallResult(
+        await runtime.gateway.request("POST", "/plugins/install/zip", {
+          body: { zip_file_path: source },
+        }),
+        {
+          sourceType: type,
+        },
+      );
     },
   );
 
@@ -373,9 +524,12 @@ export function registerPluginTools(registrar: ToolRegistrar) {
       enabled: z.boolean(),
     },
     async ({ plugin_name, enabled }) =>
-      runtime.gateway.request(
-        "POST",
-        `/plugins/${encodeSegment(plugin_name)}/${enabled ? "enable" : "disable"}`,
+      compactPluginMutationResult(
+        await runtime.gateway.request(
+          "POST",
+          `/plugins/${encodeSegment(plugin_name)}/${enabled ? "enable" : "disable"}`,
+        ),
+        { pluginName: plugin_name },
       ),
   );
 
@@ -393,14 +547,17 @@ export function registerPluginTools(registrar: ToolRegistrar) {
       plugin_name: z.string().min(1),
     },
     async ({ plugin_name }) =>
-      runtime.gateway.request("POST", `/plugins/${encodeSegment(plugin_name)}/reload`),
+      compactPluginMutationResult(
+        await runtime.gateway.request("POST", `/plugins/${encodeSegment(plugin_name)}/reload`),
+        { pluginName: plugin_name },
+      ),
   );
 
   withToolErrorBoundary(
     registrar,
     {
       name: "update_plugin",
-      summary: "Update one plugin from its source.",
+      summary: "Update one plugin from its source. GitHub-sourced plugins automatically use a reachable GitHub acceleration prefix by default. `github_acceleration` is the preferred override; `proxy` is a deprecated alias.",
       category: "plugins",
       minMode: "full",
       risk: "destructive",
@@ -408,12 +565,29 @@ export function registerPluginTools(registrar: ToolRegistrar) {
     },
     {
       plugin_name: z.string().min(1),
-      proxy: z.string().optional(),
+      github_acceleration: z.string().optional().describe("Optional GitHub acceleration base URL. Use `off` to disable auto acceleration for this call."),
+      proxy: z.string().optional().describe("Deprecated alias of github_acceleration."),
     },
-    async ({ plugin_name, proxy }) =>
-      runtime.gateway.request("POST", `/plugins/${encodeSegment(plugin_name)}/update`, {
-        body: { proxy: proxy ?? "" },
-      }),
+    async ({ plugin_name, github_acceleration, proxy }) => {
+      const plugin = asRecord(
+        await runtime.gateway.request("GET", `/plugins/${encodeSegment(plugin_name)}`),
+      );
+      const repo = asNonEmptyString(plugin?.repo);
+      const resolvedAcceleration = looksLikeGitHubRepoUrl(repo)
+        ? await resolveGitHubAcceleration({ explicit: github_acceleration ?? proxy })
+        : normalizeGitHubAcceleration(github_acceleration ?? proxy);
+      const payload = await runtime.gateway.request(
+        "POST",
+        `/plugins/${encodeSegment(plugin_name)}/update`,
+        {
+          body: { proxy: resolvedAcceleration },
+        },
+      );
+      return compactPluginMutationResult(payload, {
+        pluginName: plugin_name,
+        githubAcceleration: resolvedAcceleration,
+      });
+    },
   );
 
   withToolErrorBoundary(
@@ -432,8 +606,11 @@ export function registerPluginTools(registrar: ToolRegistrar) {
       delete_data: z.boolean().default(false),
     },
     async ({ plugin_name, delete_config, delete_data }) =>
-      runtime.gateway.request("DELETE", `/plugins/${encodeSegment(plugin_name)}`, {
-        body: { delete_config, delete_data },
-      }),
+      compactPluginMutationResult(
+        await runtime.gateway.request("DELETE", `/plugins/${encodeSegment(plugin_name)}`, {
+          body: { delete_config, delete_data },
+        }),
+        { pluginName: plugin_name },
+      ),
   );
 }

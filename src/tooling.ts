@@ -5,7 +5,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { AppConfig, CapabilityMode } from "./config.js";
 import { ApiError, GatewayClient } from "./clients.js";
 import { compactLogs } from "./logs.js";
-import { jsonResult } from "./result.js";
+import { toolResult } from "./result.js";
 import { RuntimeHints } from "./runtime-hints.js";
 import { normalizeQuery } from "./utils.js";
 
@@ -135,7 +135,7 @@ export class ToolRegistrar {
         description: entry.summary,
         inputSchema,
       },
-      async (args) => jsonResult(await handler(args)),
+      async (args) => toolResult(await handler(args)),
     );
   }
 }

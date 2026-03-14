@@ -11,13 +11,438 @@ import {
   ToolCatalogEntry,
   ToolRegistrar,
   categorySummary,
+  compactOrRawLogs,
   encodeSegment,
   withToolErrorBoundary,
 } from "./tooling.js";
+import { compactMessageToolLogs } from "./message-tools.js";
+import { richResult } from "./result.js";
 import { redactSensitiveData, searchObject } from "./utils.js";
 
 export { categorySummary };
 export type { Runtime, ToolCatalogEntry };
+
+const seenInternalToolParameterHints = new Set<string>();
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function compactObject(record: Record<string, unknown>) {
+  const compacted: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(record)) {
+    if (value === null || value === undefined || value === "") {
+      continue;
+    }
+    if (Array.isArray(value) && value.length === 0) {
+      continue;
+    }
+    compacted[key] = value;
+  }
+  return compacted;
+}
+
+function compactToolParameters(parameters: unknown, includeSchema = false) {
+  const schema = asRecord(parameters);
+  if (!schema) {
+    return includeSchema ? parameters : undefined;
+  }
+
+  const properties = asRecord(schema.properties);
+  const propertyNames = properties ? Object.keys(properties) : [];
+  const required = Array.isArray(schema.required)
+    ? schema.required.filter((item): item is string => typeof item === "string")
+    : [];
+
+  return compactObject({
+    type: typeof schema.type === "string" ? schema.type : null,
+    required: required.length > 0 ? required : null,
+    parameter_keys: propertyNames.length > 0 ? propertyNames : null,
+    parameter_count: propertyNames.length || null,
+    schema: includeSchema ? schema : null,
+  });
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isInternalToolTaskTerminal(status: string | null) {
+  return status === "completed" || status === "failed";
+}
+
+function extractTextPartsFromResultContent(content: unknown) {
+  const items = Array.isArray(content) ? content : [];
+  return items
+    .map((item) => asRecord(item))
+    .map((item) => {
+      if (typeof item?.text === "string") {
+        return item.text.trim();
+      }
+      const raw = asRecord(item?.raw);
+      return typeof raw?.text === "string" ? raw.text.trim() : "";
+    })
+    .filter(Boolean);
+}
+
+function compactInternalToolLogEntries(
+  runtime: Runtime,
+  logs: unknown,
+  maxEntries: number,
+) {
+  const items = Array.isArray(logs) ? logs : [];
+  return compactMessageToolLogs(compactOrRawLogs(runtime, items, maxEntries));
+}
+
+function compactInternalToolMessagePart(part: unknown) {
+  const record = asRecord(part);
+  if (!record) {
+    return part;
+  }
+  const type = typeof record.type === "string" ? record.type : null;
+  return compactObject({
+    type,
+    text: typeof record.text === "string" ? record.text : null,
+    attachment_id:
+      typeof record.attachment_id === "string" ? record.attachment_id : null,
+    filename: typeof record.filename === "string" ? record.filename : null,
+    mime_type: typeof record.mime_type === "string" ? record.mime_type : null,
+    size: typeof record.size === "number" ? record.size : null,
+    url:
+      typeof record.download_url === "string"
+        ? null
+        : typeof record.url === "string"
+          ? record.url
+          : null,
+    download_url:
+      typeof record.download_url === "string" ? record.download_url : null,
+  });
+}
+
+function compactInternalToolMessageParts(parts: unknown) {
+  const items = Array.isArray(parts) ? parts : [];
+  return items
+    .map((item) => compactInternalToolMessagePart(item))
+    .filter((item) => item !== null && item !== undefined);
+}
+
+function buildInternalToolImageContents(parts: unknown) {
+  const items = Array.isArray(parts) ? parts : [];
+  return items
+    .map((item) => asRecord(item))
+    .filter((item) => item?.type === "image")
+    .map((item) => {
+      const data = typeof item?.base64 === "string" ? item.base64.trim() : "";
+      const mimeType =
+        typeof item?.mime_type === "string" && item.mime_type.trim()
+          ? item.mime_type.trim()
+          : "image/jpeg";
+      if (!data) {
+        return null;
+      }
+      return {
+        type: "image",
+        data,
+        mimeType,
+      };
+    })
+    .filter((item): item is { type: "image"; data: string; mimeType: string } => Boolean(item));
+}
+
+export function compactInternalTool(
+  payload: unknown,
+  options: { includeParameters?: boolean } = {},
+) {
+  const tool = asRecord(payload);
+  if (!tool) {
+    return payload;
+  }
+
+  const parameterSummary = compactToolParameters(tool.parameters, options.includeParameters);
+  const parameterRecord = asRecord(parameterSummary);
+
+  return compactObject({
+    name: typeof tool.name === "string" ? tool.name : null,
+    description: typeof tool.description === "string" ? tool.description : null,
+    active: typeof tool.active === "boolean" ? tool.active : null,
+    origin: typeof tool.origin === "string" && tool.origin !== "unknown" ? tool.origin : null,
+    origin_name:
+      typeof tool.origin_name === "string" && tool.origin_name !== "unknown"
+        ? tool.origin_name
+        : null,
+    type: typeof tool.type === "string" ? tool.type : null,
+    parameter_keys:
+      Array.isArray(parameterRecord?.parameter_keys) ? parameterRecord.parameter_keys : null,
+    required: Array.isArray(parameterRecord?.required) ? parameterRecord.required : null,
+    parameter_count:
+      typeof parameterRecord?.parameter_count === "number" ? parameterRecord.parameter_count : null,
+    parameters: options.includeParameters ? parameterRecord?.schema ?? tool.parameters : null,
+  });
+}
+
+export function compactInternalToolList(
+  payload: unknown,
+  options: { includeParameters?: boolean } = {},
+) {
+  const items = Array.isArray(payload) ? payload : [];
+  return items
+    .map((item) => compactInternalTool(item, options))
+    .filter((item): item is Record<string, unknown> => Boolean(asRecord(item)));
+}
+
+function extractInternalToolText(payload: unknown) {
+  const record = asRecord(payload);
+  if (!record) {
+    return null;
+  }
+
+  const emitted = asRecord(record.emitted);
+  if (typeof emitted?.text === "string" && emitted.text.trim()) {
+    return emitted.text.trim();
+  }
+
+  const results = Array.isArray(record.results) ? record.results : [];
+  const texts = results
+    .map((item) => asRecord(item))
+    .flatMap((item) => {
+      const directText = typeof item?.text === "string" ? item.text.trim() : "";
+      const contentTexts = extractTextPartsFromResultContent(item?.content);
+      return [directText, ...contentTexts].filter(Boolean);
+    });
+  if (texts.length > 0) {
+    return [...new Set(texts)].join("\n\n");
+  }
+
+  if (typeof record.result_text === "string" && record.result_text.trim()) {
+    return record.result_text.trim();
+  }
+
+  return null;
+}
+
+function extractInternalToolTaskId(payload: unknown, text: string | null) {
+  const record = asRecord(payload);
+  if (typeof record?.task_id === "string" && record.task_id.trim()) {
+    return record.task_id.trim();
+  }
+  if (!text) {
+    return null;
+  }
+  const match = text.match(/task_id\s*[:=]\s*([a-zA-Z0-9_-]+)/i);
+  return match?.[1] ?? null;
+}
+
+function isBackgroundAcceptanceText(text: string | null) {
+  if (!text) {
+    return false;
+  }
+  return [
+    "Background task submitted",
+    "任务已启动",
+    "正在后台",
+    "自动发送给用户",
+    "完成后会自动发送",
+    "你将会在完成后收到通知",
+  ].some((pattern) => text.includes(pattern));
+}
+
+function extractInternalToolStatus(
+  payload: unknown,
+  completed: boolean | null,
+  isBackgroundAccepted: boolean,
+) {
+  const record = asRecord(payload);
+  if (typeof record?.status === "string" && record.status.trim()) {
+    return record.status.trim();
+  }
+  if (isBackgroundAccepted) {
+    return "running";
+  }
+  if (completed === true) {
+    return "completed";
+  }
+  return "finished";
+}
+
+function compactInternalToolTaskEvent(
+  payload: unknown,
+  options: {
+    includeParameters?: boolean;
+    includeArguments?: boolean;
+    includeDebug?: boolean;
+  } = {},
+) {
+  const event = asRecord(payload);
+  if (!event) {
+    return payload;
+  }
+  const eventType = typeof event.type === "string" ? event.type : null;
+  const data = event.data;
+  let compactedData: unknown = data;
+
+  if (eventType && ["accepted", "result", "completed", "failed"].includes(eventType)) {
+    compactedData = compactInternalToolInvocation(data, {
+      includeParameters: options.includeParameters,
+      includeArguments: options.includeArguments,
+      includeDebug: options.includeDebug,
+    });
+  } else if (eventType === "emitted") {
+    const emitted = asRecord(data);
+    compactedData = compactObject({
+      type: typeof emitted?.type === "string" ? emitted.type : null,
+      text: typeof emitted?.text === "string" ? emitted.text : null,
+      reasoning: typeof emitted?.reasoning === "string" ? emitted.reasoning : null,
+      completed: typeof emitted?.completed === "boolean" ? emitted.completed : null,
+      message_parts:
+        Array.isArray(emitted?.message_parts) && emitted.message_parts.length > 0
+          ? emitted.message_parts
+          : null,
+    });
+  }
+
+  return compactObject({
+    seq: typeof event.seq === "number" ? event.seq : null,
+    type: eventType,
+    data: compactedData,
+  });
+}
+
+export function compactInternalToolInvocation(
+  payload: unknown,
+  options: {
+    toolName?: string;
+    includeParameters?: boolean;
+    includeArguments?: boolean;
+    includeDebug?: boolean;
+  },
+) {
+  const record = asRecord(payload);
+  const tool = compactInternalTool(record?.tool, {
+    includeParameters: options.includeParameters,
+  });
+  const emitted = asRecord(record?.emitted);
+  const argumentRecord = asRecord(record?.arguments);
+  const debugRecord = asRecord(record?.debug);
+  const text = extractInternalToolText(record);
+  const isBackgroundAccepted = isBackgroundAcceptanceText(text);
+  const taskId = extractInternalToolTaskId(record, text);
+  const completed = typeof emitted?.completed === "boolean" ? emitted.completed : null;
+  const status = extractInternalToolStatus(record, completed, isBackgroundAccepted);
+  const messagePartsRaw =
+    Array.isArray(emitted?.message_parts) && emitted.message_parts.length > 0
+      ? emitted.message_parts
+      : Array.isArray(record?.message_parts) && record.message_parts.length > 0
+        ? record.message_parts
+        : null;
+  const messageParts = messagePartsRaw ? compactInternalToolMessageParts(messagePartsRaw) : null;
+  const shouldExposeAcceptedReply = isBackgroundAccepted && !isInternalToolTaskTerminal(status);
+  const shouldSuppressFinalAcceptance =
+    isBackgroundAccepted && status === "completed" && messageParts !== null;
+
+  return compactObject({
+    tool: asRecord(tool),
+    tool_name:
+      options.toolName ??
+      (typeof record?.tool_name === "string"
+        ? record.tool_name
+        : typeof asRecord(record?.tool)?.name === "string"
+          ? String(asRecord(record?.tool)?.name)
+          : null),
+    status,
+    task_id: taskId,
+    execution_mode:
+      typeof record?.execution_mode === "string" && record.execution_mode !== "sync"
+        ? record.execution_mode
+        : null,
+    reply: !shouldExposeAcceptedReply && !shouldSuppressFinalAcceptance ? text : null,
+    accepted_reply: shouldExposeAcceptedReply ? text : null,
+    message_parts: messageParts,
+    completed:
+      status === "completed"
+        ? true
+        : status === "failed"
+          ? false
+          : completed,
+    error: typeof record?.error === "string" && record.error.trim() ? record.error.trim() : null,
+    conversation_id:
+      typeof record?.conversation_id === "string" ? record.conversation_id : null,
+    message_id: typeof record?.message_id === "string" ? record.message_id : null,
+    unified_msg_origin:
+      typeof record?.unified_msg_origin === "string" ? record.unified_msg_origin : null,
+    arguments: options.includeArguments && argumentRecord ? argumentRecord : null,
+    debug: options.includeDebug && debugRecord ? debugRecord : null,
+    logs: Array.isArray(record?.logs) && record.logs.length > 0 ? record.logs : null,
+  });
+}
+
+function buildInternalToolRichResult(
+  runtime: Runtime,
+  payload: unknown,
+  compacted: unknown,
+  options: {
+    includeImageContent: boolean;
+    includeLogs: boolean;
+    logLimit: number;
+  },
+) {
+  const record = asRecord(payload);
+  const compactedRecord = asRecord(compacted);
+  const rawLogs = Array.isArray(record?.logs) ? record.logs : [];
+  const compactLogs =
+    options.includeLogs && rawLogs.length > 0
+      ? compactInternalToolLogEntries(runtime, rawLogs, options.logLimit)
+      : [];
+
+  const rawMessageParts =
+    Array.isArray(asRecord(asRecord(payload)?.emitted)?.message_parts)
+      ? asRecord(asRecord(payload)?.emitted)?.message_parts
+      : Array.isArray(record?.message_parts)
+        ? record.message_parts
+        : Array.isArray(asRecord(compactedRecord?.task)?.message_parts)
+          ? asRecord(compactedRecord?.task)?.message_parts
+          : Array.isArray(compactedRecord?.message_parts)
+            ? compactedRecord.message_parts
+            : [];
+
+  const finalValue = asRecord(compacted)
+    ? compactObject({
+        ...compactedRecord,
+        logs: options.includeLogs && compactLogs.length > 0 ? compactLogs : null,
+      })
+    : compacted;
+
+  const extraContent = options.includeImageContent
+    ? buildInternalToolImageContents(rawMessageParts)
+    : [];
+
+  return richResult(finalValue, extraContent);
+}
+
+async function waitForInternalToolTask(
+  runtime: Runtime,
+  taskId: string,
+  options: {
+    waitTimeoutSeconds: number;
+    pollIntervalSeconds: number;
+  },
+) {
+  const deadline = Date.now() + options.waitTimeoutSeconds * 1000;
+  let latest = await runtime.gateway.request("GET", `/tools/tasks/${encodeSegment(taskId)}`);
+  while (Date.now() < deadline) {
+    const statusRecord = asRecord(latest);
+    const status =
+      typeof statusRecord?.status === "string" ? statusRecord.status.trim() : null;
+    if (isInternalToolTaskTerminal(status)) {
+      return latest;
+    }
+    await sleep(Math.max(100, options.pollIntervalSeconds * 1000));
+    latest = await runtime.gateway.request("GET", `/tools/tasks/${encodeSegment(taskId)}`);
+  }
+  return latest;
+}
 
 export function registerTools(server: McpServer, runtime: Runtime): ToolCatalogEntry[] {
   const registrar = new ToolRegistrar(server, runtime);
@@ -293,15 +718,39 @@ export function registerTools(server: McpServer, runtime: Runtime): ToolCatalogE
   withToolErrorBoundary(
     registrar,
     {
-      name: "list_internal_tools",
-      summary: "List AstrBot internal LLM tools.",
+      name: "list_astrbot_tools",
+      summary: "List AstrBot internal LLM tools in a compact shape.",
       category: "astrbot_tools",
       minMode: "readonly",
       risk: "read",
-      aliases: ["tools"],
+      aliases: ["listtool", "astrbot-tool-list"],
     },
-    {},
-    async () => runtime.gateway.request("GET", "/tools"),
+    {
+      include_parameters: z.boolean().default(false),
+    },
+    async ({ include_parameters }) =>
+      compactInternalToolList(await runtime.gateway.request("GET", "/tools"), {
+        includeParameters: include_parameters,
+      }),
+  );
+
+  withToolErrorBoundary(
+    registrar,
+    {
+      name: "list_internal_tools",
+      summary: "List AstrBot internal LLM tools in a compact shape.",
+      category: "astrbot_tools",
+      minMode: "readonly",
+      risk: "read",
+      aliases: ["tools", "list-tool"],
+    },
+    {
+      include_parameters: z.boolean().default(false),
+    },
+    async ({ include_parameters }) =>
+      compactInternalToolList(await runtime.gateway.request("GET", "/tools"), {
+        includeParameters: include_parameters,
+      }),
   );
 
   withToolErrorBoundary(
@@ -316,9 +765,13 @@ export function registerTools(server: McpServer, runtime: Runtime): ToolCatalogE
     },
     {
       tool_name: z.string().min(1),
+      include_parameters: z.boolean().default(true),
     },
-    async ({ tool_name }) =>
-      runtime.gateway.request("GET", `/tools/${encodeSegment(tool_name)}`),
+    async ({ tool_name, include_parameters }) =>
+      compactInternalTool(
+        await runtime.gateway.request("GET", `/tools/${encodeSegment(tool_name)}`),
+        { includeParameters: include_parameters },
+      ),
   );
 
   withToolErrorBoundary(
@@ -341,6 +794,16 @@ export function registerTools(server: McpServer, runtime: Runtime): ToolCatalogE
       persist_history: z.boolean().default(false),
       capture_messages: z.boolean().default(true),
       response_timeout_seconds: z.number().min(0.1).max(600).default(3),
+      wait_for_completion: z.boolean().default(true),
+      wait_timeout_seconds: z.number().min(0.1).max(1800).default(30),
+      poll_interval_seconds: z.number().min(0.1).max(10).default(1),
+      include_logs: z.boolean().default(false),
+      log_limit: z.number().int().min(1).max(500).default(30),
+      include_image_content: z.boolean().default(true),
+      image_max_bytes: z.number().int().min(1024).max(20 * 1024 * 1024).default(2 * 1024 * 1024),
+      show_parameters: z.boolean().optional(),
+      show_arguments: z.boolean().default(false),
+      show_debug: z.boolean().default(false),
     },
     async ({
       tool_name,
@@ -352,19 +815,193 @@ export function registerTools(server: McpServer, runtime: Runtime): ToolCatalogE
       persist_history,
       capture_messages,
       response_timeout_seconds,
-    }) =>
-      runtime.gateway.request("POST", `/tools/${encodeSegment(tool_name)}/invoke`, {
-        body: {
-          arguments: args,
-          message,
-          sender_id,
-          conversation_id,
-          ensure_webui_session,
-          persist_history,
-          capture_messages,
-          response_timeout_seconds,
+      wait_for_completion,
+      wait_timeout_seconds,
+      poll_interval_seconds,
+      include_logs,
+      log_limit,
+      include_image_content,
+      image_max_bytes,
+      show_parameters,
+      show_arguments,
+      show_debug,
+    }) => {
+      const includeParameters =
+        typeof show_parameters === "boolean"
+          ? show_parameters
+          : !seenInternalToolParameterHints.has(tool_name);
+
+      const payload = await runtime.gateway.request(
+        "POST",
+        `/tools/${encodeSegment(tool_name)}/invoke`,
+        {
+          body: {
+            arguments: args,
+            message,
+            sender_id,
+            conversation_id,
+            ensure_webui_session,
+            persist_history,
+            capture_messages,
+            response_timeout_seconds,
+            include_logs,
+            log_limit,
+            include_base64: include_image_content,
+            base64_max_bytes: image_max_bytes,
+          },
         },
-      }),
+      );
+
+      const initialTaskId = extractInternalToolTaskId(payload, extractInternalToolText(payload));
+      const initialStatus = typeof asRecord(payload)?.status === "string"
+        ? String(asRecord(payload)?.status)
+        : null;
+      const finalPayload =
+        wait_for_completion && initialTaskId && !isInternalToolTaskTerminal(initialStatus)
+          ? await waitForInternalToolTask(runtime, initialTaskId, {
+              waitTimeoutSeconds: wait_timeout_seconds,
+              pollIntervalSeconds: poll_interval_seconds,
+            })
+          : payload;
+
+      seenInternalToolParameterHints.add(tool_name);
+      const compacted = compactInternalToolInvocation(finalPayload, {
+        toolName: tool_name,
+        includeParameters,
+        includeArguments: show_arguments,
+        includeDebug: show_debug,
+      });
+      return buildInternalToolRichResult(runtime, finalPayload, compacted, {
+        includeImageContent: include_image_content,
+        includeLogs: include_logs,
+        logLimit: log_limit,
+      });
+    },
+  );
+
+  withToolErrorBoundary(
+    registrar,
+    {
+      name: "get_internal_tool_task",
+      summary: "Get one internal tool task state or final result.",
+      category: "astrbot_tools",
+      minMode: "readonly",
+      risk: "read",
+      aliases: ["tool-task", "tool-task-status"],
+    },
+    {
+      task_id: z.string().min(1),
+      include_logs: z.boolean().default(false),
+      log_limit: z.number().int().min(1).max(500).default(30),
+      include_image_content: z.boolean().default(true),
+      show_parameters: z.boolean().default(false),
+      show_arguments: z.boolean().default(false),
+      show_debug: z.boolean().default(false),
+    },
+    async ({
+      task_id,
+      include_logs,
+      log_limit,
+      include_image_content,
+      show_parameters,
+      show_arguments,
+      show_debug,
+    }) => {
+      const payload = await runtime.gateway.request("GET", `/tools/tasks/${encodeSegment(task_id)}`);
+      const compacted = compactInternalToolInvocation(
+        payload,
+        {
+          includeParameters: show_parameters,
+          includeArguments: show_arguments,
+          includeDebug: show_debug,
+        },
+      );
+      return buildInternalToolRichResult(runtime, payload, compacted, {
+        includeImageContent: include_image_content,
+        includeLogs: include_logs,
+        logLimit: log_limit,
+      });
+    },
+  );
+
+  withToolErrorBoundary(
+    registrar,
+    {
+      name: "stream_internal_tool_task",
+      summary: "Watch one internal tool task SSE stream and return compact events.",
+      category: "astrbot_tools",
+      minMode: "readonly",
+      risk: "read",
+      aliases: ["watch-tool-task", "tool-task-stream"],
+    },
+    {
+      task_id: z.string().min(1),
+      wait_seconds: z.number().min(0.1).max(1800).default(30),
+      replay_history: z.boolean().default(true),
+      include_logs: z.boolean().default(false),
+      log_limit: z.number().int().min(1).max(500).default(30),
+      include_image_content: z.boolean().default(true),
+      show_parameters: z.boolean().default(false),
+      show_arguments: z.boolean().default(false),
+      show_debug: z.boolean().default(false),
+    },
+    async ({
+      task_id,
+      wait_seconds,
+      replay_history,
+      include_logs,
+      log_limit,
+      include_image_content,
+      show_parameters,
+      show_arguments,
+      show_debug,
+    }) => {
+      const events = await runtime.gateway.stream(
+        "GET",
+        `/tools/tasks/${encodeSegment(task_id)}/stream`,
+        {
+          query: { replay_history },
+          timeoutMs: Math.max(1000, wait_seconds * 1000),
+        },
+      );
+      const snapshot = await runtime.gateway.request(
+        "GET",
+        `/tools/tasks/${encodeSegment(task_id)}`,
+      );
+      const task = compactInternalToolInvocation(snapshot, {
+        includeParameters: show_parameters,
+        includeArguments: show_arguments,
+        includeDebug: show_debug,
+      });
+      const payload = compactObject({
+        task: compactInternalToolInvocation(snapshot, {
+          includeParameters: show_parameters,
+          includeArguments: show_arguments,
+          includeDebug: show_debug,
+        }),
+        events: events
+          .map((event) => compactInternalToolTaskEvent(event.data, {
+            includeParameters: show_parameters,
+            includeArguments: show_arguments,
+            includeDebug: show_debug,
+          }))
+          .filter((event) => event !== null && event !== undefined),
+      });
+      return buildInternalToolRichResult(
+        runtime,
+        compactObject({
+          ...(asRecord(snapshot) ?? {}),
+          logs: include_logs ? asRecord(snapshot)?.logs : null,
+          message_parts: asRecord(task)?.message_parts,
+        }),
+        payload,
+        {
+          includeImageContent: include_image_content,
+          includeLogs: include_logs,
+          logLimit: log_limit,
+        },
+      );
+    },
   );
 
   withToolErrorBoundary(

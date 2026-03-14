@@ -572,6 +572,12 @@ async function main() {
           getString(items[0], "name");
       });
 
+      await runCase(results, "list_astrbot_tools", async () => {
+        const payload = await session.call("list_astrbot_tools");
+        const items = asArray<Record<string, unknown>>(payload);
+        assert(items.length > 0);
+      });
+
       await runCase(results, "get_internal_tool_details", async () => {
         if (!context.internalToolName) {
           skip("no internal tool available");
@@ -590,6 +596,7 @@ async function main() {
           persist_history: false,
         });
         assert(isRecord(payload));
+        assert.equal(getString(payload, "tool_name"), "md_doc_create");
       });
 
       await runCase(results, "list_mcp_servers", async () => {

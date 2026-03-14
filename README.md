@@ -56,6 +56,7 @@ Optional:
 - `ASTRBOT_ENABLE_SEARCH_TOOLS` (`false` by default)
 - `ASTRBOT_LOG_VIEW` (`compact` by default, or `raw`)
 - `ASTRBOT_ENABLE_LOG_NOISE_FILTERING` (`true` by default)
+- `ASTRBOT_GITHUB_ACCELERATION` (optional GitHub acceleration base URL override for plugin repo install/update; use `off` to disable MCP auto acceleration)
 
 ## Tool groups
 
@@ -65,7 +66,7 @@ Optional:
 - configs: inspect core/plugin, search, patch core/plugin
 - plugins: list/details/config read+replace/install/set-enabled/reload/update/uninstall
 - messages: trigger replies, recent sessions, history
-- astrbot_tools: list/details/invoke
+- astrbot_tools: list/details/invoke/task/stream
 - mcp_servers: list/register/update/uninstall/test
 - personas: list/details/upsert/delete
 - skills: list/install/toggle/delete
@@ -93,10 +94,26 @@ Optional:
 - `trigger_message_reply` accepts `include_logs=false` when you want a low-context response but still keep the send-and-wait behavior.
 - `get_message_history`: for `webchat`, use `conversation_id` or `target_id`; do not pass the sender id as `user_id`. `conversation_id` may also be a synthetic id you created earlier during injection tests.
 
+## Internal tool semantics
+
+- `list_astrbot_tools`: compact list of AstrBot internal tools. This is the clearest discovery entry for LLMs.
+- `list_internal_tools`: same compact list, kept for backward compatibility.
+- `get_internal_tool_details`: compact tool metadata by default, with full parameter schema controlled by `include_parameters`.
+- `invoke_internal_tool`: compact invoke result by default. It returns the tool parameter schema only on the first call for the same tool within the current MCP process, then hides it on later calls to reduce context use.
+- `invoke_internal_tool`: now defaults to `wait_for_completion=true`. If AstrBot returns a background `task_id`, MCP will keep polling `/tools/tasks/{task_id}` until the task is terminal or `wait_timeout_seconds` is reached.
+- `invoke_internal_tool`: when a tool only returns a background acceptance message, MCP now puts that text into `accepted_reply` instead of pretending it is the final `reply`.
+- `invoke_internal_tool`: `include_logs=true` appends simplified task logs to the JSON result; default is `false` to keep the response short.
+- `invoke_internal_tool`: `include_image_content=true` makes MCP return completed image attachments as real MCP `image` content blocks in addition to compact JSON metadata.
+- `invoke_internal_tool`: use `show_parameters=true` to force showing the tool parameter schema, `show_parameters=false` to hide it, `show_arguments=true` to echo the actual call arguments, and `show_debug=true` to include debug payloads.
+- `get_internal_tool_task`: compact query for one internal tool task by `task_id`.
+- `stream_internal_tool_task`: collects compact SSE task events from `/tools/tasks/{task_id}/stream` and returns the latest task snapshot plus streamed events.
+
 ## Plugin workflow
 
 - `list_plugins`: compact plugin list for discovery only. It no longer returns full handlers/config noise.
 - `get_plugin_details`: compact metadata plus command list for one plugin. Config is intentionally separated.
 - `get_plugin_config_file`: fetch the full editable plugin config object.
 - `replace_plugin_config_file`: replace the full plugin config object and reload the plugin.
+- `install_plugin` / `update_plugin`: for GitHub repos, MCP now auto-detects a reachable GitHub acceleration prefix and uses it by default.
+- `install_plugin` / `update_plugin`: prefer `github_acceleration`; `proxy` is kept only as a deprecated alias for backward compatibility.
 - Recommended flow: `install_plugin` -> `get_plugin_details` -> `get_plugin_config_file` -> `replace_plugin_config_file` -> `uninstall_plugin` when needed.
