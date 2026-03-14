@@ -6,6 +6,7 @@ import { AppConfig, CapabilityMode } from "./config.js";
 import { ApiError, GatewayClient } from "./clients.js";
 import { compactLogs } from "./logs.js";
 import { jsonResult } from "./result.js";
+import { RuntimeHints } from "./runtime-hints.js";
 import { normalizeQuery } from "./utils.js";
 
 export type ToolRisk = "read" | "safe-write" | "destructive";
@@ -27,6 +28,7 @@ export type ToolCategory =
 export interface Runtime {
   config: AppConfig;
   gateway: GatewayClient;
+  hints: RuntimeHints;
 }
 
 export interface ToolCatalogEntry {

@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 
 import { GatewayClient } from "./clients.js";
 import { loadConfig } from "./config.js";
+import { buildInstructions, loadRuntimeHints } from "./runtime-hints.js";
 import { categorySummary, registerTools } from "./tools.js";
 
 const VERSION = "0.2.0";
@@ -21,17 +22,25 @@ async function main() {
   }
 
   const config = loadConfig();
+  const gateway = new GatewayClient(config);
+  const hints = await loadRuntimeHints(gateway);
   const runtime = {
     config,
-    gateway: new GatewayClient(config),
+    gateway,
+    hints,
   };
 
-  const server = new McpServer({
-    name: "astrbot-mcp",
-    version: VERSION,
-    description:
-      "MCP server for AstrBot runtime and gateway operations. Defaults: capabilityMode=full, search_tools disabled.",
-  });
+  const server = new McpServer(
+    {
+      name: "astrbot-mcp",
+      version: VERSION,
+      description:
+        "MCP server for AstrBot runtime and gateway operations. Defaults: capabilityMode=full, search_tools disabled.",
+    },
+    {
+      instructions: buildInstructions(hints),
+    },
+  );
 
   const catalog = registerTools(server, runtime);
   const categoryMap = categorySummary(catalog);
@@ -52,6 +61,9 @@ async function main() {
               search_tools_enabled: config.enableSearchTools,
               log_view: config.logView,
               enable_log_noise_filtering: config.enableLogNoiseFiltering,
+              wake_prefix: hints.wakePrefix,
+              friend_message_needs_wake_prefix: hints.friendMessageNeedsWakePrefix,
+              reply_prefix: hints.replyPrefix,
               category_counts: categoryMap,
               categories: summarizeCategories(categoryMap),
             },

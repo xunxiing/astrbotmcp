@@ -45,6 +45,6 @@ htmlcov/
 
 # Roo configuration
 .roo/
-
+skills/
 # Codex configuration (local)
 .codex/

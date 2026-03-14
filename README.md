@@ -63,7 +63,7 @@ Optional:
 - platforms: list, stats, details
 - providers: list, current, details
 - configs: inspect core/plugin, search, patch core/plugin
-- plugins: list/details/install/enable/disable/reload/update/uninstall
+- plugins: list/details/config read+replace/install/set-enabled/reload/update/uninstall
 - messages: trigger replies, recent sessions, history
 - astrbot_tools: list/details/invoke
 - mcp_servers: list/register/update/uninstall/test
@@ -89,5 +89,14 @@ Optional:
 ## Message semantics
 
 - `trigger_message_reply`: injects an inbound message through `/events/injections/message`, optionally overrides the target LLM provider/model/streaming flags, waits for the event to settle, and by default returns only the bot reply text. Internal metadata is hidden unless `include_debug=true`.
+- `trigger_message_reply`: `session_id` can be caller-created for tests. Reuse the same id to continue one synthetic conversation; use a fresh id to start an isolated test session. For `GroupMessage`, `session_id` is usually the real group id.
 - `trigger_message_reply` accepts `include_logs=false` when you want a low-context response but still keep the send-and-wait behavior.
-- `get_message_history`: for `webchat`, use `conversation_id` or `target_id`; do not pass the sender id as `user_id`.
+- `get_message_history`: for `webchat`, use `conversation_id` or `target_id`; do not pass the sender id as `user_id`. `conversation_id` may also be a synthetic id you created earlier during injection tests.
+
+## Plugin workflow
+
+- `list_plugins`: compact plugin list for discovery only. It no longer returns full handlers/config noise.
+- `get_plugin_details`: compact metadata plus command list for one plugin. Config is intentionally separated.
+- `get_plugin_config_file`: fetch the full editable plugin config object.
+- `replace_plugin_config_file`: replace the full plugin config object and reload the plugin.
+- Recommended flow: `install_plugin` -> `get_plugin_details` -> `get_plugin_config_file` -> `replace_plugin_config_file` -> `uninstall_plugin` when needed.

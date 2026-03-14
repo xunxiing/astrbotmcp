@@ -18,7 +18,8 @@
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "dev": "tsx src/index.ts",
-    "test": "tsx --test test/**/*.test.ts"
+    "test": "tsx --test test/**/*.test.ts",
+    "test:mcp": "tsx test/mcp-smoke.ts"
   },
   "keywords": [
     "astrbot",

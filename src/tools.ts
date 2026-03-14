@@ -1,10 +1,10 @@
 ﻿import * as z from "zod/v4";
 import { existsSync } from "node:fs";
-
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { registerDiscoveryTools } from "./discovery-tools.js";
 import { registerMessageTools } from "./message-tools.js";
+import { registerPluginTools } from "./plugin-tools.js";
 import { registerSystemTools } from "./system-tools.js";
 import {
   Runtime,
@@ -23,6 +23,7 @@ export function registerTools(server: McpServer, runtime: Runtime): ToolCatalogE
   const registrar = new ToolRegistrar(server, runtime);
   registerSystemTools(registrar);
   registerMessageTools(registrar);
+  registerPluginTools(registrar);
 
   withToolErrorBoundary(
     registrar,
@@ -122,8 +123,77 @@ export function registerTools(server: McpServer, runtime: Runtime): ToolCatalogE
     {
       provider_id: z.string().min(1),
     },
-    async ({ provider_id }) =>
-      runtime.gateway.request("GET", `/providers/${encodeSegment(provider_id)}`),
+    async ({ provider_id }) => {
+      const candidates = new Set<string>([provider_id]);
+      if (provider_id.includes("/")) {
+        candidates.add(provider_id.split("/")[0] ?? provider_id);
+      }
+
+      try {
+        const providers = await runtime.gateway.request("GET", "/providers");
+        const items = Array.isArray(providers) ? providers : [];
+        const providerPrefix = provider_id.includes("/") ? provider_id.split("/")[0] ?? provider_id : provider_id;
+        for (const item of items) {
+          if (typeof item !== "object" || !item) {
+            continue;
+          }
+          const record = item as Record<string, unknown>;
+          const id = typeof record.id === "string" ? record.id : null;
+          const itemProviderId =
+            typeof record.provider_id === "string" ? record.provider_id : null;
+          const config =
+            typeof record.config === "object" && record.config
+              ? (record.config as Record<string, unknown>)
+              : null;
+          const sourceId =
+            config && typeof config.provider_source_id === "string"
+              ? config.provider_source_id
+              : null;
+          const normalizedSourceId = sourceId ? sourceId.replace(/[（(].*?[)）]/g, "") : null;
+          const normalizedPrefix = providerPrefix.replace(/[（(].*?[)）]/g, "");
+
+          if ([id, itemProviderId, config?.id].includes(provider_id) && sourceId) {
+            if (id) {
+              candidates.add(id);
+            }
+            if (itemProviderId) {
+              candidates.add(itemProviderId);
+            }
+            candidates.add(sourceId);
+          }
+
+          const sourceMatchesPrefix =
+            Boolean(sourceId && (sourceId.startsWith(providerPrefix) || providerPrefix.startsWith(sourceId))) ||
+            Boolean(
+              normalizedSourceId &&
+                normalizedPrefix &&
+                (normalizedSourceId === normalizedPrefix ||
+                  normalizedSourceId.startsWith(normalizedPrefix) ||
+                  normalizedPrefix.startsWith(normalizedSourceId)),
+            );
+          if (provider_id.includes("/") && sourceMatchesPrefix) {
+            if (id) {
+              candidates.add(id);
+            }
+            if (itemProviderId) {
+              candidates.add(itemProviderId);
+            }
+          }
+        }
+      } catch {
+        // Ignore provider catalog lookup failures and fall back to direct attempts.
+      }
+
+      let lastError: unknown;
+      for (const candidate of candidates) {
+        try {
+          return await runtime.gateway.request("GET", `/providers/${encodeSegment(candidate)}`);
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      throw lastError instanceof Error ? lastError : new Error("Failed to get provider details.");
+    },
   );
 
   withToolErrorBoundary(
@@ -143,30 +213,6 @@ export function registerTools(server: McpServer, runtime: Runtime): ToolCatalogE
       const data = await runtime.gateway.request("GET", "/configs/core", {
         query: { path },
       });
-      return redactSensitiveData(data);
-    },
-  );
-
-  withToolErrorBoundary(
-    registrar,
-    {
-      name: "inspect_plugin_config",
-      summary: "Inspect one plugin config (optionally by dot path).",
-      category: "configs",
-      minMode: "readonly",
-      risk: "read",
-      aliases: ["plugin-config"],
-    },
-    {
-      plugin_name: z.string().min(1),
-      path: z.string().optional(),
-    },
-    async ({ plugin_name, path }) => {
-      const data = await runtime.gateway.request(
-        "GET",
-        `/configs/plugins/${encodeSegment(plugin_name)}`,
-        { query: { path } },
-      );
       return redactSensitiveData(data);
     },
   );
@@ -241,186 +287,6 @@ export function registerTools(server: McpServer, runtime: Runtime): ToolCatalogE
     async ({ path, value, create_missing }) =>
       runtime.gateway.request("PATCH", "/configs/core", {
         body: { path, value, create_missing },
-      }),
-  );
-
-  withToolErrorBoundary(
-    registrar,
-    {
-      name: "patch_plugin_config",
-      summary: "Patch one plugin config path and hot-reload that plugin.",
-      category: "configs",
-      minMode: "minimize",
-      risk: "safe-write",
-      aliases: ["update-plugin-config"],
-    },
-    {
-      plugin_name: z.string().min(1),
-      path: z.string().min(1),
-      value: z.unknown(),
-      create_missing: z.boolean().default(true),
-    },
-    async ({ plugin_name, path, value, create_missing }) =>
-      runtime.gateway.request("PATCH", `/configs/plugins/${encodeSegment(plugin_name)}`, {
-        body: { path, value, create_missing },
-      }),
-  );
-
-  withToolErrorBoundary(
-    registrar,
-    {
-      name: "list_plugins",
-      summary: "List plugin metadata and activation state.",
-      category: "plugins",
-      minMode: "readonly",
-      risk: "read",
-      aliases: ["plugins", "plugin-list"],
-    },
-    {},
-    async () => runtime.gateway.request("GET", "/plugins"),
-  );
-
-  withToolErrorBoundary(
-    registrar,
-    {
-      name: "get_plugin_details",
-      summary: "Get one plugin details and config snapshot (if available).",
-      category: "plugins",
-      minMode: "readonly",
-      risk: "read",
-      aliases: ["plugin-detail"],
-    },
-    {
-      plugin_name: z.string().min(1),
-    },
-    async ({ plugin_name }) =>
-      runtime.gateway.request("GET", `/plugins/${encodeSegment(plugin_name)}`),
-  );
-
-  withToolErrorBoundary(
-    registrar,
-    {
-      name: "install_plugin",
-      summary: "Install plugin from repo URL or local zip path.",
-      category: "plugins",
-      minMode: "full",
-      risk: "destructive",
-      aliases: ["plugin-install"],
-    },
-    {
-      source: z.string().min(1),
-      source_type: z.enum(["auto", "repo", "zip"]).default("auto"),
-      proxy: z.string().optional(),
-    },
-    async ({ source, source_type, proxy }) => {
-      const looksLikeRepo = /^https?:\/\//i.test(source) || source.endsWith(".git");
-      const type = source_type === "auto" ? (looksLikeRepo ? "repo" : "zip") : source_type;
-
-      if (type === "repo") {
-        return runtime.gateway.request("POST", "/plugins/install/repo", {
-          body: { repo_url: source, proxy: proxy ?? "" },
-        });
-      }
-
-      if (existsSync(source)) {
-        return runtime.gateway.uploadFile("/plugins/install/upload", source);
-      }
-
-      return runtime.gateway.request("POST", "/plugins/install/zip", {
-        body: { zip_file_path: source },
-      });
-    },
-  );
-
-  withToolErrorBoundary(
-    registrar,
-    {
-      name: "enable_plugin",
-      summary: "Enable one plugin.",
-      category: "plugins",
-      minMode: "minimize",
-      risk: "safe-write",
-      aliases: ["plugin-on"],
-    },
-    {
-      plugin_name: z.string().min(1),
-    },
-    async ({ plugin_name }) =>
-      runtime.gateway.request("POST", `/plugins/${encodeSegment(plugin_name)}/enable`),
-  );
-
-  withToolErrorBoundary(
-    registrar,
-    {
-      name: "disable_plugin",
-      summary: "Disable one plugin.",
-      category: "plugins",
-      minMode: "minimize",
-      risk: "safe-write",
-      aliases: ["plugin-off"],
-    },
-    {
-      plugin_name: z.string().min(1),
-    },
-    async ({ plugin_name }) =>
-      runtime.gateway.request("POST", `/plugins/${encodeSegment(plugin_name)}/disable`),
-  );
-
-  withToolErrorBoundary(
-    registrar,
-    {
-      name: "reload_plugin",
-      summary: "Reload one plugin.",
-      category: "plugins",
-      minMode: "minimize",
-      risk: "safe-write",
-      aliases: ["plugin-reload"],
-    },
-    {
-      plugin_name: z.string().min(1),
-    },
-    async ({ plugin_name }) =>
-      runtime.gateway.request("POST", `/plugins/${encodeSegment(plugin_name)}/reload`),
-  );
-
-  withToolErrorBoundary(
-    registrar,
-    {
-      name: "update_plugin",
-      summary: "Update one plugin from its source.",
-      category: "plugins",
-      minMode: "full",
-      risk: "destructive",
-      aliases: ["plugin-update"],
-    },
-    {
-      plugin_name: z.string().min(1),
-      proxy: z.string().optional(),
-    },
-    async ({ plugin_name, proxy }) =>
-      runtime.gateway.request("POST", `/plugins/${encodeSegment(plugin_name)}/update`, {
-        body: { proxy: proxy ?? "" },
-      }),
-  );
-
-  withToolErrorBoundary(
-    registrar,
-    {
-      name: "uninstall_plugin",
-      summary: "Uninstall one plugin, optionally deleting config/data.",
-      category: "plugins",
-      minMode: "full",
-      risk: "destructive",
-      aliases: ["plugin-uninstall", "remove-plugin"],
-    },
-    {
-      plugin_name: z.string().min(1),
-      delete_config: z.boolean().default(false),
-      delete_data: z.boolean().default(false),
-    },
-    async ({ plugin_name, delete_config, delete_data }) =>
-      runtime.gateway.request("DELETE", `/plugins/${encodeSegment(plugin_name)}`, {
-        body: { delete_config, delete_data },
       }),
   );
 

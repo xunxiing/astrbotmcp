@@ -34,6 +34,9 @@ export function registerSystemTools(registrar: ToolRegistrar) {
       return {
         capability_mode: runtime.config.capabilityMode,
         search_tools_enabled: runtime.config.enableSearchTools,
+        wake_prefix: runtime.hints.wakePrefix,
+        friend_message_needs_wake_prefix: runtime.hints.friendMessageNeedsWakePrefix,
+        reply_prefix: runtime.hints.replyPrefix,
         health: health.status === "fulfilled" ? health.value : null,
         gateway: gatewayMeta.status === "fulfilled" ? redactSensitiveData(gatewayMeta.value) : null,
       };

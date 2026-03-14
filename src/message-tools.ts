@@ -40,9 +40,16 @@ export function compactMessageToolLogs(logs: unknown[]): unknown[] {
     if (!record) {
       return entry;
     }
+    const message = coerceLogText(entry).replace(/^(?:\[[^\]]+\]\s*)+:\s*/, "").trim();
+    if (message) {
+      return { message };
+    }
     const compacted: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(record)) {
       if (value === null || value === undefined || value === "") {
+        continue;
+      }
+      if (key === "time" || key === "level" || key === "component") {
         continue;
       }
       compacted[key] = value;
@@ -58,18 +65,184 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
-function extractPlainTextFromParts(parts: unknown): string {
-  if (!Array.isArray(parts)) {
+interface ReplyCandidate {
+  sender_id: string;
+  sender_name: string;
+  text: string;
+  reasoning: string;
+  parts: unknown[];
+  created_at: unknown;
+  created_at_ms: number | null;
+}
+
+interface ReplySelectionOptions {
+  inputText?: string;
+  senderId?: string;
+  senderName?: string;
+  notBeforeMs?: number;
+}
+
+function parseTimestampMs(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value > 1_000_000_000_000 ? value : value * 1000;
+  }
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const numeric = Number(trimmed);
+  if (Number.isFinite(numeric)) {
+    return numeric > 1_000_000_000_000 ? numeric : numeric * 1000;
+  }
+  const parsed = Date.parse(trimmed);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function maybeParseJson(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+  const trimmed = value.trim();
+  if (!trimmed || (!trimmed.startsWith("{") && !trimmed.startsWith("["))) {
+    return value;
+  }
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    return value;
+  }
+}
+
+function extractTraceReplyText(value: unknown): string {
+  const parsed = maybeParseJson(value);
+  const record = asRecord(parsed);
+  if (!record) {
     return "";
   }
+
+  const fields = asRecord(record.fields);
+  const resp = fields?.resp ?? record.resp;
+  if (typeof resp === "string" && resp.trim()) {
+    return resp.trim();
+  }
+
+  const text = fields?.text ?? record.text;
+  if (typeof text === "string" && text.trim()) {
+    return text.trim();
+  }
+
+  return "";
+}
+
+function normalizeSpecialText(value: unknown): string {
+  if (typeof value !== "string") {
+    return "";
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+  return extractTraceReplyText(trimmed) || trimmed;
+}
+
+function normalizeInlinePart(type: string, fields: Record<string, unknown>) {
+  const normalized: Record<string, unknown> = { type };
+  for (const key of ["text", "url", "name", "qq", "user_id"]) {
+    const value = fields[key];
+    if (typeof value === "string" && value.trim()) {
+      normalized[key] = value.trim();
+    }
+  }
+  return normalized;
+}
+
+function normalizeGatewayMessagePart(part: unknown): Record<string, unknown> | null {
+  const record = asRecord(part);
+  if (!record) {
+    return null;
+  }
+  const type = String(record.type ?? "").trim();
+  if (!type) {
+    return null;
+  }
+
+  const data = asRecord(record.data) ?? {};
+  if (type === "plain" || type === "text") {
+    const textCandidate = data.text ?? record.text;
+    const normalizedText = normalizeSpecialText(textCandidate);
+    if (normalizedText) {
+      return { type: "plain", text: normalizedText };
+    }
+  }
+
+  if (type === "at") {
+    const qq = typeof data.qq === "string" ? data.qq.trim() : "";
+    const name = typeof data.name === "string" ? data.name.trim() : "";
+    const text = typeof record.text === "string" ? record.text.trim() : "";
+    return normalizeInlinePart("at", {
+      text: text || (name ? `@${name}` : qq ? `@${qq}` : ""),
+      qq,
+      name,
+    });
+  }
+
+  if (type === "file" || type === "image") {
+    const urlCandidate = data.url ?? data.file ?? data.file_ ?? record.url;
+    const nameCandidate = data.name ?? record.name;
+    return normalizeInlinePart(type, {
+      url: typeof urlCandidate === "string" ? urlCandidate : "",
+      name: typeof nameCandidate === "string" ? nameCandidate : "",
+    });
+  }
+
+  const textCandidate = data.text ?? record.text;
+  const normalizedText = normalizeSpecialText(textCandidate);
+  if (normalizedText) {
+    return normalizeInlinePart(type, { text: normalizedText });
+  }
+
+  const urlCandidate = data.url ?? record.url;
+  if (typeof urlCandidate === "string" && urlCandidate.trim()) {
+    return normalizeInlinePart(type, { url: urlCandidate });
+  }
+
+  return { type };
+}
+
+function normalizeGatewayMessageParts(parts: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(parts)) {
+    return [];
+  }
   return parts
+    .map((part) => normalizeGatewayMessagePart(part))
+    .filter((part): part is Record<string, unknown> => Boolean(part));
+}
+
+function extractPlainTextFromParts(parts: unknown): string {
+  return normalizeGatewayMessageParts(parts)
     .map((part) => {
-      const record = asRecord(part);
-      if (!record) {
-        return "";
+      const type = String(part.type ?? "").trim();
+      const text = typeof part.text === "string" ? part.text.trim() : "";
+      const url = typeof part.url === "string" ? part.url.trim() : "";
+      const name = typeof part.name === "string" ? part.name.trim() : "";
+
+      if (type === "plain" || type === "at") {
+        return text;
       }
-      if (record.type === "plain" && typeof record.text === "string") {
-        return record.text;
+      if (text) {
+        return text;
+      }
+      if (type === "file") {
+        return `[file] ${url || name}`.trim();
+      }
+      if (type === "image") {
+        return `[image] ${url || name}`.trim();
+      }
+      if (url) {
+        return `[${type}] ${url}`.trim();
       }
       return "";
     })
@@ -93,6 +266,161 @@ function isMetricsMessage(text: string): boolean {
   } catch {
     return false;
   }
+}
+
+function stripAnsi(value: string): string {
+  return value.replace(/\u001b\[[0-9;]*m/g, "");
+}
+
+function coerceLogText(entry: unknown): string {
+  const record = asRecord(entry);
+  if (!record) {
+    return "";
+  }
+  const candidate =
+    typeof record.data === "string"
+      ? record.data
+      : typeof record.message === "string"
+        ? record.message
+        : "";
+  return stripAnsi(candidate).trim();
+}
+
+function extractPartsAndReasoning(entry: Record<string, unknown>) {
+  const content = maybeParseJson(entry.content);
+  const contentRecord = asRecord(content);
+
+  let parts: Record<string, unknown>[] = [];
+  let reasoning = "";
+
+  if (Array.isArray(content)) {
+    parts = normalizeGatewayMessageParts(content);
+  } else if (contentRecord) {
+    parts = normalizeGatewayMessageParts(contentRecord.message);
+    if (parts.length === 0) {
+      parts = normalizeGatewayMessageParts(contentRecord.content);
+    }
+    reasoning =
+      typeof contentRecord.reasoning === "string" ? contentRecord.reasoning.trim() : "";
+    if (parts.length === 0) {
+      const textCandidate =
+        extractTraceReplyText(contentRecord) ||
+        normalizeSpecialText(contentRecord.text ?? contentRecord.plain_text ?? contentRecord.message);
+      if (textCandidate) {
+        parts = [{ type: "plain", text: textCandidate }];
+      }
+    }
+  } else if (typeof content === "string" && content.trim()) {
+    parts = [{ type: "plain", text: normalizeSpecialText(content) }];
+  }
+
+  if (parts.length === 0) {
+    parts = normalizeGatewayMessageParts(entry.message_chain);
+  }
+  if (parts.length === 0) {
+    parts = normalizeGatewayMessageParts(entry.parts);
+  }
+  if (parts.length === 0) {
+    const textCandidate = entry.plain_text ?? entry.message ?? entry.text;
+    const normalizedText = normalizeSpecialText(textCandidate);
+    if (normalizedText) {
+      parts = [{ type: "plain", text: normalizedText }];
+    }
+  }
+  if (!reasoning && typeof entry.reasoning === "string") {
+    reasoning = entry.reasoning.trim();
+  }
+
+  return { parts, reasoning };
+}
+
+function normalizeReplyCandidate(entry: Record<string, unknown>): ReplyCandidate | null {
+  const { parts, reasoning } = extractPartsAndReasoning(entry);
+  const text = extractPlainTextFromParts(parts);
+  const senderId = String(entry.sender_id ?? entry.user_id ?? entry.sender ?? "").trim();
+  const senderName =
+    String(entry.sender_name ?? entry.display_name ?? entry.sender ?? senderId ?? "").trim() || "bot";
+
+  if (!text && !reasoning && parts.length === 0) {
+    return null;
+  }
+
+  return {
+    sender_id: senderId,
+    sender_name: senderName,
+    text,
+    reasoning,
+    parts,
+    created_at: entry.created_at ?? entry.time ?? null,
+    created_at_ms: parseTimestampMs(entry.created_at ?? entry.time),
+  };
+}
+
+function selectReplyCandidate(
+  entries: ReplyCandidate[],
+  options: ReplySelectionOptions = {},
+) {
+  const normalizedInput = String(options.inputText ?? "").trim();
+  const normalizedSenderId = String(options.senderId ?? "").trim();
+  const normalizedSenderName = String(options.senderName ?? "").trim();
+  const notBeforeMs =
+    typeof options.notBeforeMs === "number" && Number.isFinite(options.notBeforeMs)
+      ? options.notBeforeMs - 2000
+      : null;
+
+  let relevantEntries =
+    notBeforeMs === null
+      ? entries
+      : entries.filter(
+          (entry) => entry.created_at_ms === null || entry.created_at_ms >= notBeforeMs,
+        );
+
+  let lastUserIndex = -1;
+  for (let index = relevantEntries.length - 1; index >= 0; index -= 1) {
+    const entry = relevantEntries[index];
+    const sameText = normalizedInput && entry.text.trim() === normalizedInput;
+    const sameSenderId = normalizedSenderId && entry.sender_id === normalizedSenderId;
+    const sameSenderName = normalizedSenderName && entry.sender_name === normalizedSenderName;
+    if (sameText || sameSenderId || sameSenderName) {
+      lastUserIndex = index;
+      break;
+    }
+  }
+
+  const replyEntries = relevantEntries
+    .slice(lastUserIndex + 1)
+    .filter((entry) => {
+      if (!entry.text && !entry.reasoning && entry.parts.length === 0) {
+        return false;
+      }
+      if (normalizedInput && entry.text.trim() === normalizedInput) {
+        return false;
+      }
+      if (normalizedSenderId && entry.sender_id === normalizedSenderId && !entry.reasoning) {
+        return false;
+      }
+      if (normalizedSenderName && entry.sender_name === normalizedSenderName && !entry.reasoning) {
+        return false;
+      }
+      return !isMetricsMessage(entry.text);
+    });
+
+  const selected = replyEntries.at(-1) ?? null;
+
+  return {
+    reply: selected
+      ? {
+          sender_id: selected.sender_id,
+          sender_name: selected.sender_name,
+          text: selected.text,
+          reasoning: selected.reasoning,
+          parts: selected.parts,
+          created_at: selected.created_at,
+        }
+      : null,
+    reply_count: replyEntries.length,
+    raw_bot_message_count: relevantEntries.slice(lastUserIndex + 1).length,
+  };
 }
 
 function normalizeHistoryUserId(platformId: string, userId?: string, conversationId?: string): string {
@@ -193,42 +521,14 @@ async function fetchMessageHistory(
   return Array.isArray(payload) ? payload.filter((item): item is Record<string, unknown> => Boolean(asRecord(item))) : [];
 }
 
-function extractReplyFromHistory(history: Record<string, unknown>[]) {
-  let lastUserIndex = -1;
-  for (let index = history.length - 1; index >= 0; index -= 1) {
-    const entry = history[index];
-    if (String(entry.sender_id ?? "") !== "bot") {
-      lastUserIndex = index;
-      break;
-    }
-  }
-
-  const replyEntries = history
-    .slice(lastUserIndex + 1)
-    .filter((entry) => String(entry.sender_id ?? "") === "bot")
-    .map((entry) => {
-      const content = asRecord(entry.content) ?? {};
-      const parts = Array.isArray(content.message) ? content.message : [];
-      const text = extractPlainTextFromParts(parts);
-      return {
-        sender_id: String(entry.sender_id ?? ""),
-        sender_name: String(entry.sender_name ?? "bot"),
-        text,
-        reasoning: typeof content.reasoning === "string" ? content.reasoning : "",
-        parts,
-        created_at: entry.created_at ?? null,
-      };
-    })
-    .filter((entry) => entry.text || entry.reasoning || entry.parts.length > 0);
-
-  const visibleReplies = replyEntries.filter((entry) => !isMetricsMessage(entry.text));
-  const selected = visibleReplies.at(-1) ?? null;
-
-  return {
-    reply: selected,
-    reply_count: visibleReplies.length,
-    raw_bot_message_count: replyEntries.length,
-  };
+export function extractReplyFromHistory(
+  history: Record<string, unknown>[],
+  options: ReplySelectionOptions = {},
+) {
+  const normalized = history
+    .map((entry) => normalizeReplyCandidate(entry))
+    .filter((entry): entry is ReplyCandidate => Boolean(entry));
+  return selectReplyCandidate(normalized, options);
 }
 
 async function waitForReplyHistory(
@@ -238,6 +538,10 @@ async function waitForReplyHistory(
     waitSeconds: number;
     pollIntervalSeconds: number;
     pageSize: number;
+    inputText?: string;
+    senderId?: string;
+    senderName?: string;
+    notBeforeMs?: number;
   },
 ): Promise<{
   reply: {
@@ -270,7 +574,7 @@ async function waitForReplyHistory(
   const { waitSeconds, pollIntervalSeconds, pageSize } = options;
   if (waitSeconds <= 0) {
     const history = await fetchMessageHistory(runtime, target.platformId, target.userId, pageSize);
-    const extracted = extractReplyFromHistory(history);
+    const extracted = extractReplyFromHistory(history, options);
     return {
       ...extracted,
       history,
@@ -287,7 +591,7 @@ async function waitForReplyHistory(
   while (Date.now() <= deadline) {
     history = await fetchMessageHistory(runtime, target.platformId, target.userId, pageSize);
     checks += 1;
-    const extracted = extractReplyFromHistory(history);
+    const extracted = extractReplyFromHistory(history, options);
     if (extracted.reply) {
       return {
         ...extracted,
@@ -304,11 +608,301 @@ async function waitForReplyHistory(
   }
 
   return {
-    ...extractReplyFromHistory(history),
+    ...extractReplyFromHistory(history, options),
     history,
     found: false,
     checks,
     reason: "timeout" as const,
+  };
+}
+
+function collectMessageLikeRecords(
+  value: unknown,
+  output: Record<string, unknown>[],
+  visited = new Set<object>(),
+  depth = 0,
+) {
+  if (depth > 10 || value === null || value === undefined) {
+    return;
+  }
+
+  const parsed = maybeParseJson(value);
+  if (parsed !== value) {
+    collectMessageLikeRecords(parsed, output, visited, depth + 1);
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectMessageLikeRecords(item, output, visited, depth + 1);
+    }
+    return;
+  }
+
+  const record = asRecord(value);
+  if (!record) {
+    return;
+  }
+  if (visited.has(record)) {
+    return;
+  }
+  visited.add(record);
+
+  const hasSenderContext =
+    "sender_id" in record ||
+    "sender_name" in record ||
+    "user_id" in record ||
+    "display_name" in record ||
+    "sender" in record;
+
+  if (
+    ((Array.isArray(record.content) ||
+      Array.isArray(record.message_chain) ||
+      Array.isArray(record.parts) ||
+      typeof record.plain_text === "string") &&
+      hasSenderContext) ||
+    (typeof record.message === "string" &&
+      hasSenderContext) ||
+    (typeof record.text === "string" &&
+      hasSenderContext)
+  ) {
+    output.push(record);
+  }
+
+  for (const nested of Object.values(record)) {
+    collectMessageLikeRecords(nested, output, visited, depth + 1);
+  }
+}
+
+function collectLogLikeEntries(
+  value: unknown,
+  output: unknown[],
+  visited = new Set<object>(),
+  depth = 0,
+) {
+  if (depth > 10 || value === null || value === undefined) {
+    return;
+  }
+
+  const parsed = maybeParseJson(value);
+  if (parsed !== value) {
+    collectLogLikeEntries(parsed, output, visited, depth + 1);
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectLogLikeEntries(item, output, visited, depth + 1);
+    }
+    return;
+  }
+
+  const record = asRecord(value);
+  if (!record) {
+    return;
+  }
+  if (visited.has(record)) {
+    return;
+  }
+  visited.add(record);
+
+  if (
+    typeof record.data === "string" ||
+    typeof record.message === "string" ||
+    (typeof record.text === "string" && String(record.text).includes("ltm |"))
+  ) {
+    output.push(record);
+  }
+
+  for (const nested of Object.values(record)) {
+    collectLogLikeEntries(nested, output, visited, depth + 1);
+  }
+}
+
+function unwrapToolInvokePayloads(payload: unknown): unknown[] {
+  const record = asRecord(payload);
+  if (!record || !Array.isArray(record.results)) {
+    return [];
+  }
+
+  const unwrapped: unknown[] = [];
+  for (const result of record.results) {
+    const resultRecord = asRecord(result);
+    if (!resultRecord || !Array.isArray(resultRecord.content)) {
+      continue;
+    }
+    for (const entry of resultRecord.content) {
+      const contentRecord = asRecord(entry);
+      if (!contentRecord) {
+        continue;
+      }
+      if ("structured_content" in contentRecord) {
+        unwrapped.push(contentRecord.structured_content);
+      }
+      if (typeof contentRecord.text === "string") {
+        unwrapped.push(maybeParseJson(contentRecord.text));
+      }
+      const raw = asRecord(contentRecord.raw);
+      if (raw) {
+        if ("structuredContent" in raw) {
+          unwrapped.push(raw.structuredContent);
+        }
+        if (typeof raw.text === "string") {
+          unwrapped.push(maybeParseJson(raw.text));
+        }
+      }
+    }
+  }
+  return unwrapped;
+}
+
+export function extractReplyFromPlatformSessionPayload(
+  payload: unknown,
+  options: ReplySelectionOptions & { sessionNeedle?: string } = {},
+) {
+  const unwrappedPayloads = unwrapToolInvokePayloads(payload);
+  const sources = unwrappedPayloads.length > 0 ? unwrappedPayloads : [payload];
+  const messageRecords: Record<string, unknown>[] = [];
+  for (const candidate of sources) {
+    collectMessageLikeRecords(candidate, messageRecords);
+  }
+  const normalizedMessages = messageRecords
+    .map((entry) => normalizeReplyCandidate(entry))
+    .filter((entry): entry is ReplyCandidate => Boolean(entry));
+  const selected = selectReplyCandidate(normalizedMessages, options);
+  if (selected.reply) {
+    return {
+      ...selected,
+      logs: [] as unknown[],
+    };
+  }
+
+  const logs: unknown[] = [];
+  for (const candidate of sources) {
+    collectLogLikeEntries(candidate, logs);
+  }
+  return {
+    reply: extractReplyFromSessionLogs(logs, options),
+    reply_count: selected.reply_count,
+    raw_bot_message_count: selected.raw_bot_message_count,
+    logs,
+  };
+}
+
+async function invokePlatformSessionCapture(
+  runtime: Runtime,
+  target: { targetId: string; platformId?: string; messageType?: string },
+  options: {
+    waitSeconds: number;
+    pollIntervalSeconds: number;
+    maxEntries: number;
+    inputText?: string;
+    senderId?: string;
+    senderName?: string;
+    sessionNeedle?: string;
+    notBeforeMs?: number;
+  },
+): Promise<{
+  reply: {
+    sender_id?: string;
+    sender_name: string;
+    text: string;
+    reasoning: string;
+    parts: unknown[];
+    created_at: unknown;
+  } | null;
+  logs: unknown[];
+  checks: number;
+  reason: "unavailable" | "disabled" | "reply_found" | "timeout";
+}> {
+  if (!target.targetId) {
+    return {
+      reply: null,
+      logs: [],
+      checks: 0,
+      reason: "unavailable",
+    };
+  }
+
+  const fetchPayload = async (waitSeconds: number) =>
+    runtime.gateway.request("POST", `/tools/${encodeSegment("get_platform_session_messages")}/invoke`, {
+      body: {
+        arguments: {
+          target_id: target.targetId,
+          platform_id: target.platformId,
+          message_type: target.messageType,
+          wait_seconds: waitSeconds,
+          max_messages: options.maxEntries,
+          poll_interval_seconds: options.pollIntervalSeconds,
+        },
+        capture_messages: true,
+        response_timeout_seconds: Math.max(5, waitSeconds + 5),
+      },
+    });
+
+  if (options.waitSeconds <= 0) {
+    try {
+      const payload = await fetchPayload(0);
+      const extracted = extractReplyFromPlatformSessionPayload(payload, options);
+      return {
+        reply: extracted.reply,
+        logs: extracted.logs,
+        checks: 1,
+        reason: extracted.reply ? "reply_found" : "disabled",
+      };
+    } catch {
+      return {
+        reply: null,
+        logs: [],
+        checks: 1,
+        reason: "unavailable",
+      };
+    }
+  }
+
+  const deadline = Date.now() + options.waitSeconds * 1000;
+  let checks = 0;
+  let logs: unknown[] = [];
+
+  while (Date.now() <= deadline) {
+    const remainingMs = deadline - Date.now();
+    const stepSeconds = Math.max(
+      0,
+      Math.min(options.pollIntervalSeconds, Math.ceil(remainingMs / 1000)),
+    );
+
+    try {
+      const payload = await fetchPayload(stepSeconds);
+      const extracted = extractReplyFromPlatformSessionPayload(payload, options);
+      checks += 1;
+      logs = extracted.logs;
+      if (extracted.reply) {
+        return {
+          reply: extracted.reply,
+          logs,
+          checks,
+          reason: "reply_found",
+        };
+      }
+    } catch {
+      return {
+        reply: null,
+        logs: [],
+        checks,
+        reason: "unavailable",
+      };
+    }
+
+    if (Date.now() >= deadline) {
+      break;
+    }
+  }
+
+  return {
+    reply: null,
+    logs,
+    checks,
+    reason: "timeout",
   };
 }
 
@@ -325,6 +919,227 @@ async function fetchEventLogs(
     },
   });
   return extractLogs(payload);
+}
+
+function extractReplyFromSessionLogs(logs: unknown[], options: {
+  sessionNeedle?: string;
+  inputText?: string;
+  senderId?: string;
+  senderName?: string;
+  notBeforeMs?: number;
+}) {
+  const normalizedSessionNeedle = String(options.sessionNeedle ?? "").trim();
+  const normalizedInput = String(options.inputText ?? "").trim();
+  const normalizedSenderId = String(options.senderId ?? "").trim();
+  const normalizedSenderName = String(options.senderName ?? "").trim();
+  const notBeforeMs =
+    typeof options.notBeforeMs === "number" && Number.isFinite(options.notBeforeMs)
+      ? options.notBeforeMs - 2000
+      : null;
+
+  for (let index = logs.length - 1; index >= 0; index -= 1) {
+    const text = coerceLogText(logs[index]);
+    if (!text || !text.includes("ltm |")) {
+      continue;
+    }
+    if (normalizedSessionNeedle && !text.includes(normalizedSessionNeedle)) {
+      continue;
+    }
+    const record = asRecord(logs[index]);
+    const logTimeMs = parseTimestampMs(record?.time);
+    if (notBeforeMs !== null && logTimeMs !== null && logTimeMs < notBeforeMs) {
+      continue;
+    }
+    const match = text.match(/ltm \| (?<session>.+?) \| \[(?<sender>.+?)\/\d{2}:\d{2}:\d{2}\]:\s*(?<body>.*)$/);
+    if (!match?.groups) {
+      continue;
+    }
+    const body = String(match.groups.body ?? "").trim();
+    const sender = String(match.groups.sender ?? "").trim();
+    if (!body || body === normalizedInput) {
+      continue;
+    }
+    if (normalizedSenderName && sender === normalizedSenderName) {
+      continue;
+    }
+    return {
+      sender_name: sender || "bot",
+      text: body,
+      reasoning: "",
+      parts: body ? [{ type: "plain", text: body }] : [],
+      created_at: null,
+    };
+  }
+  return null;
+}
+
+function findReplyFromSendLogs(logs: unknown[], options: {
+  inputText?: string;
+  senderId?: string;
+  senderName?: string;
+  notBeforeMs?: number;
+}) {
+  const normalizedInput = String(options.inputText ?? "").trim();
+  const normalizedSenderId = String(options.senderId ?? "").trim();
+  const normalizedSenderName = String(options.senderName ?? "").trim();
+  const notBeforeMs =
+    typeof options.notBeforeMs === "number" && Number.isFinite(options.notBeforeMs)
+      ? options.notBeforeMs - 2000
+      : null;
+  const senderNeedle =
+    normalizedSenderId && normalizedSenderName
+      ? `Prepare to send - ${normalizedSenderId}/${normalizedSenderName}:`
+      : normalizedSenderId
+        ? `Prepare to send - ${normalizedSenderId}/`
+        : "";
+
+  for (let index = logs.length - 1; index >= 0; index -= 1) {
+    const text = coerceLogText(logs[index]);
+    if (!text || !text.includes("Prepare to send - ")) {
+      continue;
+    }
+    if (senderNeedle && !text.includes(senderNeedle)) {
+      continue;
+    }
+    const record = asRecord(logs[index]);
+    const logTimeMs = parseTimestampMs(record?.time);
+    if (notBeforeMs !== null && logTimeMs !== null && logTimeMs < notBeforeMs) {
+      continue;
+    }
+    const match = text.match(/Prepare to send - (?<target>.+?):\s*(?<body>.*)$/);
+    if (!match?.groups) {
+      continue;
+    }
+    const body = String(match.groups.body ?? "").trim();
+    if (!body || body === normalizedInput || isMetricsMessage(body)) {
+      continue;
+    }
+    return {
+      reply: {
+        sender_name: "bot",
+        text: body,
+        reasoning: "",
+        parts: body ? [{ type: "plain", text: body }] : [],
+        created_at: record?.time ?? null,
+      },
+      log: logs[index],
+    };
+  }
+
+  return null;
+}
+
+export async function waitForReplyLogs(
+  runtime: Runtime,
+  options: {
+    sessionNeedle?: string;
+    inputText?: string;
+    senderId?: string;
+    senderName?: string;
+    notBeforeMs?: number;
+    waitSeconds: number;
+    pollIntervalSeconds: number;
+    maxEntries: number;
+  },
+): Promise<{
+  reply: {
+    sender_name: string;
+    text: string;
+    reasoning: string;
+    parts: unknown[];
+    created_at: unknown;
+  } | null;
+  logs: unknown[];
+  checks: number;
+  reason: "unavailable" | "disabled" | "reply_found" | "timeout";
+}> {
+  const sessionNeedle = String(options.sessionNeedle ?? "").trim();
+  const fetchScopedLogs = async (waitSeconds: number) => {
+    if (!sessionNeedle) {
+      return [] as unknown[];
+    }
+    const payload = await runtime.gateway.request("GET", "/logs/history", {
+      query: {
+        wait_seconds: waitSeconds,
+        limit: options.maxEntries,
+        contains: sessionNeedle,
+      },
+    });
+    return extractLogs(payload);
+  };
+  const fetchGlobalLogs = async (waitSeconds: number) => {
+    const payload = await runtime.gateway.request("GET", "/logs/history", {
+      query: {
+        wait_seconds: waitSeconds,
+        limit: options.maxEntries,
+      },
+    });
+    return extractLogs(payload);
+  };
+
+  if (options.waitSeconds <= 0) {
+    const scopedLogs = await fetchScopedLogs(0);
+    const globalLogs = await fetchGlobalLogs(0);
+    const sessionReply = extractReplyFromSessionLogs(scopedLogs, options);
+    const sendReply = findReplyFromSendLogs(globalLogs, options);
+    return {
+      reply: sessionReply ?? sendReply?.reply ?? null,
+      logs:
+        sessionReply
+          ? scopedLogs
+          : sendReply
+            ? [sendReply.log]
+            : scopedLogs.length > 0
+              ? scopedLogs
+              : globalLogs,
+      checks: 1,
+      reason: "disabled",
+    };
+  }
+
+  const deadline = Date.now() + options.waitSeconds * 1000;
+  let checks = 0;
+  let logs: unknown[] = [];
+
+  while (Date.now() <= deadline) {
+    const remainingMs = deadline - Date.now();
+    const stepSeconds = Math.max(
+      0,
+      Math.min(options.pollIntervalSeconds, Math.ceil(remainingMs / 1000)),
+    );
+    const scopedLogs = await fetchScopedLogs(stepSeconds);
+    const globalLogs = await fetchGlobalLogs(0);
+    checks += 1;
+    const sessionReply = extractReplyFromSessionLogs(scopedLogs, options);
+    const sendReply = findReplyFromSendLogs(globalLogs, options);
+    const reply = sessionReply ?? sendReply?.reply ?? null;
+    logs =
+      sessionReply
+        ? scopedLogs
+        : sendReply
+          ? [sendReply.log]
+          : scopedLogs.length > 0
+            ? scopedLogs
+            : globalLogs;
+    if (reply) {
+      return {
+        reply,
+        logs,
+        checks,
+        reason: "reply_found",
+      };
+    }
+    if (Date.now() >= deadline) {
+      break;
+    }
+  }
+
+  return {
+    reply: null,
+    logs,
+    checks,
+    reason: "timeout",
+  };
 }
 
 export interface EventWatchResult {
@@ -406,38 +1221,43 @@ export async function waitForEventToSettle(
 
 export function registerMessageTools(registrar: ToolRegistrar) {
   const { runtime } = registrar;
+  const wakePrefixHint = runtime.hints.wakePrefix
+    ? ` For this runtime, group command tests usually need the wake prefix "${runtime.hints.wakePrefix}".`
+    : "";
+  const sessionHint =
+    " session_id may be any caller-chosen test session key. Reuse it to continue the same synthetic conversation, or create a new one when you want an isolated test run.";
 
   withToolErrorBoundary(
     registrar,
     {
       name: "trigger_message_reply",
       summary:
-        "Inject an inbound message into AstrBot, optionally override the LLM, wait for reply processing to settle, and return compact event logs by default.",
+        `Inject an inbound message into AstrBot, wait for reply processing to settle, and return the captured reply.${wakePrefixHint}${sessionHint}`,
       category: "messages",
       minMode: "minimize",
       risk: "safe-write",
       aliases: ["send-message", "chat-with-bot", "trigger-reply", "inject-message", "send-with-logs"],
     },
     {
-      message: z.string().optional(),
-      message_chain: z.array(messagePartSchema).optional(),
-      sender_id: z.string().default("mcp-test"),
-      display_name: z.string().optional(),
-      unified_msg_origin: z.string().optional(),
-      platform_id: z.string().optional(),
-      message_type: z.string().optional(),
-      session_id: z.string().optional(),
-      group_id: z.string().optional(),
-      conversation_id: z.string().optional(),
+      message: z.string().optional().describe("Plain text inbound message to inject."),
+      message_chain: z.array(messagePartSchema).optional().describe("Structured inbound message chain when plain text is not enough."),
+      sender_id: z.string().default("mcp-test").describe("Synthetic sender id for the injected user message."),
+      display_name: z.string().optional().describe("Optional display name shown for the synthetic sender."),
+      unified_msg_origin: z.string().optional().describe("Fully qualified AstrBot origin. Use this only when you already know the exact runtime origin string."),
+      platform_id: z.string().optional().describe("Target platform id such as webchat or napcat."),
+      message_type: z.string().optional().describe("Platform message type such as FriendMessage or GroupMessage."),
+      session_id: z.string().optional().describe("Conversation/session key. For tests you may create any new session_id yourself. Reuse the same id to continue a synthetic conversation. For group chats this is usually the group id."),
+      group_id: z.string().optional().describe("Group target id. For GroupMessage tests this should usually be the real group id."),
+      conversation_id: z.string().optional().describe("Webchat conversation id. You may create a new one yourself for isolated webchat tests, or reuse an existing one to continue that webchat session."),
       llm: llmConfigSchema,
-      response_timeout_seconds: z.number().min(1).max(600).default(120),
-      show_in_webui: z.boolean().default(true),
-      include_logs: z.boolean().default(true),
-      include_debug: z.boolean().default(false),
-      wait_seconds: z.number().int().min(0).max(180).default(15),
-      quiet_window_seconds: z.number().int().min(1).max(30).default(2),
-      poll_interval_seconds: z.number().int().min(1).max(10).default(1),
-      max_entries: z.number().int().min(1).max(1000).default(200),
+      response_timeout_seconds: z.number().min(1).max(600).default(120).describe("AstrBot reply timeout for the injected event itself."),
+      show_in_webui: z.boolean().default(true).describe("When true, keep the injected conversation visible in WebUI/webchat where supported."),
+      include_logs: z.boolean().default(true).describe("Return simplified compact logs together with the reply. Disable this for the shortest response."),
+      include_debug: z.boolean().default(false).describe("Include internal debug metadata such as injection routing and reply lookup details."),
+      wait_seconds: z.number().int().min(0).max(180).default(15).describe("How long MCP should wait for event settlement and reply capture."),
+      quiet_window_seconds: z.number().int().min(1).max(30).default(2).describe("Consider the event settled after logs stay unchanged for this many seconds."),
+      poll_interval_seconds: z.number().int().min(1).max(10).default(1).describe("Polling interval used while waiting for event completion and reply capture."),
+      max_entries: z.number().int().min(1).max(1000).default(200).describe("Maximum logs/history entries to inspect while waiting."),
     },
     async ({
       message,
@@ -468,6 +1288,8 @@ export function registerMessageTools(registrar: ToolRegistrar) {
       const resolvedQuietWindowSeconds = quiet_window_seconds ?? 2;
       const resolvedPollIntervalSeconds = poll_interval_seconds ?? 1;
       const resolvedMaxEntries = max_entries ?? 200;
+      const requestStartedAt = Date.now();
+      const inputText = message ?? extractPlainTextFromParts(message_chain);
 
       if (!message && (!message_chain || message_chain.length === 0)) {
         throw new Error("message or message_chain is required.");
@@ -541,17 +1363,80 @@ export function registerMessageTools(registrar: ToolRegistrar) {
       });
 
       const historyTarget = deriveHistoryTarget(injection);
+      const remainingWaitSeconds = Math.max(0, resolvedWaitSeconds - watch.waitedSeconds);
       const replyLookup = await waitForReplyHistory(runtime, historyTarget, {
-        waitSeconds: Math.max(0, resolvedWaitSeconds - watch.waitedSeconds),
+        waitSeconds: remainingWaitSeconds,
         pollIntervalSeconds: resolvedPollIntervalSeconds,
         pageSize: Math.min(resolvedMaxEntries, 100),
+        inputText,
+        senderId: resolvedSenderId,
+        senderName: display_name ?? resolvedSenderId,
+        notBeforeMs: requestStartedAt,
       });
+      const platformReplyLookup =
+        replyLookup.reply
+          ? {
+              reply: null,
+              logs: [] as unknown[],
+              checks: 0,
+              reason: "disabled" as const,
+            }
+          : await invokePlatformSessionCapture(
+              runtime,
+              {
+                targetId: String(
+                  injection.group_id ??
+                    injection.session_id ??
+                    injection.conversation_id ??
+                    injection.display_conversation_id ??
+                    group_id ??
+                    session_id ??
+                    normalizedConversationId ??
+                    historyTarget?.userId ??
+                    "",
+                ).trim(),
+                platformId: String(injection.platform_id ?? platform_id ?? historyTarget?.platformId ?? "").trim() || undefined,
+                messageType: String(injection.message_type ?? message_type ?? "").trim() || undefined,
+              },
+              {
+                sessionNeedle: String(injection.unified_msg_origin ?? ""),
+                inputText,
+                senderId: resolvedSenderId,
+                senderName: display_name ?? resolvedSenderId,
+                waitSeconds: remainingWaitSeconds,
+                pollIntervalSeconds: resolvedPollIntervalSeconds,
+                maxEntries: Math.min(resolvedMaxEntries, 100),
+                notBeforeMs: requestStartedAt,
+              },
+            );
+      const logReplyLookup =
+        replyLookup.reply || platformReplyLookup.reply || String(injection.platform_id ?? "") === "webchat"
+          ? {
+              reply: null,
+              logs: [] as unknown[],
+              checks: 0,
+              reason: "disabled" as const,
+            }
+          : await waitForReplyLogs(runtime, {
+              sessionNeedle: String(injection.unified_msg_origin ?? ""),
+              inputText,
+              senderId: resolvedSenderId,
+              senderName: display_name ?? resolvedSenderId,
+              waitSeconds: remainingWaitSeconds,
+              pollIntervalSeconds: resolvedPollIntervalSeconds,
+              maxEntries: resolvedMaxEntries,
+              notBeforeMs: requestStartedAt,
+            });
+      const finalReply =
+        replyLookup.reply ?? platformReplyLookup.reply ?? logReplyLookup.reply;
+      const finalReplySource =
+        replyLookup.reply ? "history" : platformReplyLookup.reply ? "platform" : logReplyLookup.reply ? "logs" : null;
 
       const result: Record<string, unknown> = {};
-      if (replyLookup.reply) {
-        result.reply = replyLookup.reply.text;
-        if (replyLookup.reply.reasoning) {
-          result.reasoning = replyLookup.reply.reasoning;
+      if (finalReply) {
+        result.reply = finalReply.text;
+        if (finalReply.reasoning) {
+          result.reasoning = finalReply.reasoning;
         }
       } else {
         result.reply_found = false;
@@ -563,8 +1448,28 @@ export function registerMessageTools(registrar: ToolRegistrar) {
         };
       }
 
-      if (resolvedIncludeLogs && watch.logs.length > 0) {
+      if (resolvedIncludeLogs && finalReplySource === "logs" && logReplyLookup.logs.length > 0) {
+        result.logs = compactMessageToolLogs(
+          compactOrRawLogs(runtime, logReplyLookup.logs, resolvedMaxEntries),
+        );
+      } else if (
+        resolvedIncludeLogs &&
+        finalReplySource === "platform" &&
+        platformReplyLookup.logs.length > 0
+      ) {
+        result.logs = compactMessageToolLogs(
+          compactOrRawLogs(runtime, platformReplyLookup.logs, resolvedMaxEntries),
+        );
+      } else if (resolvedIncludeLogs && watch.logs.length > 0) {
         result.logs = compactMessageToolLogs(watch.logs);
+      } else if (resolvedIncludeLogs && platformReplyLookup.logs.length > 0) {
+        result.logs = compactMessageToolLogs(
+          compactOrRawLogs(runtime, platformReplyLookup.logs, resolvedMaxEntries),
+        );
+      } else if (resolvedIncludeLogs && logReplyLookup.logs.length > 0) {
+        result.logs = compactMessageToolLogs(
+          compactOrRawLogs(runtime, logReplyLookup.logs, resolvedMaxEntries),
+        );
       }
       if (resolvedIncludeDebug) {
         result.debug = {
@@ -587,6 +1492,10 @@ export function registerMessageTools(registrar: ToolRegistrar) {
           history_target: historyTarget,
           history_checks: replyLookup.checks,
           history_reason: replyLookup.reason,
+          platform_reply_checks: platformReplyLookup.checks,
+          platform_reply_reason: platformReplyLookup.reason,
+          log_reply_checks: logReplyLookup.checks,
+          log_reply_reason: logReplyLookup.reason,
           quiet_window_seconds: resolvedQuietWindowSeconds,
           poll_interval_seconds: resolvedPollIntervalSeconds,
           log_count: watch.rawLogs.length,
@@ -622,19 +1531,19 @@ export function registerMessageTools(registrar: ToolRegistrar) {
     registrar,
     {
       name: "get_message_history",
-      summary: "Get persisted message history. For webchat, use conversation_id or target_id instead of sender_id.",
+      summary: "Get persisted message history. For webchat, use conversation_id or target_id instead of sender_id. conversation_id can be a caller-created synthetic webchat session id if you injected messages into one.",
       category: "messages",
       minMode: "readonly",
       risk: "read",
       aliases: ["message-history"],
     },
     {
-      platform_id: z.string().min(1),
-      user_id: z.string().optional(),
-      target_id: z.string().optional(),
-      conversation_id: z.string().optional(),
-      page: z.number().int().min(1).default(1),
-      page_size: z.number().int().min(1).max(500).default(50),
+      platform_id: z.string().min(1).describe("Platform id such as webchat or napcat."),
+      user_id: z.string().optional().describe("Underlying history key for non-webchat platforms."),
+      target_id: z.string().optional().describe("Alias of user_id for non-webchat platforms, or alias of conversation_id for webchat."),
+      conversation_id: z.string().optional().describe("Webchat conversation id. This may be a caller-created synthetic id used earlier with trigger_message_reply."),
+      page: z.number().int().min(1).default(1).describe("1-based history page number."),
+      page_size: z.number().int().min(1).max(500).default(50).describe("Number of history records per page."),
     },
     async ({ platform_id, user_id, target_id, conversation_id, page, page_size }) => {
       const resolvedUserId = normalizeHistoryUserId(
