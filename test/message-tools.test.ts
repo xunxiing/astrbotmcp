@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { waitForEventToSettle } from "../src/message-tools.js";
+import { compactMessageToolLogs, waitForEventToSettle } from "../src/message-tools.js";
 import { compactOrRawLogs, Runtime } from "../src/tooling.js";
 
 function createRuntime(handler: (waitSeconds: number) => unknown): Runtime {
@@ -114,4 +114,26 @@ test("compactOrRawLogs falls back when noise filtering removes every entry", () 
 
   assert.equal(Array.isArray(result), true);
   assert.equal(result.length, 1);
+});
+
+test("compactMessageToolLogs removes empty fields for message replies only", () => {
+  const result = compactMessageToolLogs([
+    {
+      time: "1",
+      level: "DEBUG",
+      component: null,
+      message: "hello",
+      eventId: null,
+      sessionId: null,
+      messageId: null,
+    },
+  ]) as Array<Record<string, unknown>>;
+
+  assert.deepEqual(result, [
+    {
+      time: "1",
+      level: "DEBUG",
+      message: "hello",
+    },
+  ]);
 });

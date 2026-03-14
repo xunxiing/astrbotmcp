@@ -34,6 +34,23 @@ function logFingerprint(logs: unknown[]): string {
   });
 }
 
+export function compactMessageToolLogs(logs: unknown[]): unknown[] {
+  return logs.map((entry) => {
+    const record = asRecord(entry);
+    if (!record) {
+      return entry;
+    }
+    const compacted: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(record)) {
+      if (value === null || value === undefined || value === "") {
+        continue;
+      }
+      compacted[key] = value;
+    }
+    return compacted;
+  });
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
@@ -547,7 +564,7 @@ export function registerMessageTools(registrar: ToolRegistrar) {
       }
 
       if (resolvedIncludeLogs && watch.logs.length > 0) {
-        result.logs = watch.logs;
+        result.logs = compactMessageToolLogs(watch.logs);
       }
       if (resolvedIncludeDebug) {
         result.debug = {
