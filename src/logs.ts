@@ -20,6 +20,13 @@ const NOISE_PATTERNS = [
   /GET \/logs\/stream/i,
 ];
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
 function coerceText(value: unknown): string {
   if (typeof value === "string") {
     return value;
@@ -74,6 +81,39 @@ export interface CompactLogsOptions {
   maxEntries?: number;
 }
 
+export function extractLogEntries(payload: unknown, depth = 0): unknown[] {
+  if (depth > 4 || payload === null || payload === undefined) {
+    return [];
+  }
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+
+  const record = asRecord(payload);
+  if (!record) {
+    return [];
+  }
+
+  for (const key of ["logs", "history", "entries", "items", "events"]) {
+    const value = record[key];
+    if (Array.isArray(value)) {
+      return value;
+    }
+  }
+
+  for (const key of ["data", "payload", "result"]) {
+    if (!(key in record)) {
+      continue;
+    }
+    const nested = extractLogEntries(record[key], depth + 1);
+    if (nested.length > 0) {
+      return nested;
+    }
+  }
+
+  return [];
+}
+
 export function compactLogs(
   rawLogs: unknown[],
   options: CompactLogsOptions,
@@ -123,4 +163,13 @@ export function filterLogsByNeedles(
     const text = JSON.stringify(entry).toLowerCase();
     return values.some((value) => text.includes(value));
   });
+}
+
+export function filterLogsByContains(rawLogs: unknown[], contains?: string | null): unknown[] {
+  const normalized = typeof contains === "string" ? contains.trim().toLowerCase() : "";
+  if (!normalized) {
+    return rawLogs;
+  }
+
+  return rawLogs.filter((entry) => JSON.stringify(entry).toLowerCase().includes(normalized));
 }

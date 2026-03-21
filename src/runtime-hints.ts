@@ -129,5 +129,11 @@ export function buildInstructions(hints: RuntimeHints): string {
     lines.push(`Current reply prefix: "${hints.replyPrefix}".`);
   }
   lines.push("Use trigger_message_reply for inbound message simulation and reply capture.");
+  lines.push(
+    "For plugin configuration, do not guess editable fields from plugin metadata alone. Read the full editable config with get_plugin_config_file, modify that returned config object, then save it with replace_plugin_config_file. Saving the full plugin config auto-reloads the plugin.",
+  );
+  lines.push(
+    "Use patch_plugin_config only for small path-level changes. Prefer the full read-edit-save flow for normal plugin config work.",
+  );
   return lines.join(" ");
 }

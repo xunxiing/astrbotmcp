@@ -112,8 +112,10 @@ Optional:
 
 - `list_plugins`: compact plugin list for discovery only. It no longer returns full handlers/config noise.
 - `get_plugin_details`: compact metadata plus command list for one plugin. Config is intentionally separated.
-- `get_plugin_config_file`: fetch the full editable plugin config object.
-- `replace_plugin_config_file`: replace the full plugin config object and reload the plugin.
+- `get_plugin_config_file`: fetch the full editable plugin config object. This is the main read step before changing a plugin config.
+- `replace_plugin_config_file`: replace the full plugin config object and auto-reload the plugin.
+- Normal plugin config workflow: `get_plugin_details` -> `get_plugin_config_file` -> edit the returned `config` object -> `replace_plugin_config_file`.
+- `patch_plugin_config`: only for small path-level edits. Prefer the full read-edit-save flow above for normal configuration work.
 - `install_plugin` / `update_plugin`: for GitHub repos, MCP now auto-detects a reachable GitHub acceleration prefix and uses it by default.
 - `install_plugin` / `update_plugin`: prefer `github_acceleration`; `proxy` is kept only as a deprecated alias for backward compatibility.
 - Recommended flow: `install_plugin` -> `get_plugin_details` -> `get_plugin_config_file` -> `replace_plugin_config_file` -> `uninstall_plugin` when needed.

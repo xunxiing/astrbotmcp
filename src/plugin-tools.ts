@@ -311,11 +311,11 @@ export function registerPluginTools(registrar: ToolRegistrar) {
     registrar,
     {
       name: "inspect_plugin_config",
-      summary: "Inspect one plugin config node or schema. Prefer get_plugin_config_file when you want the full editable config object.",
+      summary: "Inspect one plugin config node or schema. Use this for small path-level checks. If you want to edit a plugin config, first call get_plugin_config_file, then call replace_plugin_config_file to save the full config and auto-reload the plugin.",
       category: "configs",
       minMode: "readonly",
       risk: "read",
-      aliases: ["plugin-config"],
+      aliases: ["plugin-config", "inspect-plugin-config"],
     },
     {
       plugin_name: z.string().min(1),
@@ -335,11 +335,11 @@ export function registerPluginTools(registrar: ToolRegistrar) {
     registrar,
     {
       name: "patch_plugin_config",
-      summary: "Patch one plugin config path and hot-reload that plugin. Prefer replace_plugin_config_file when editing the full config object.",
+      summary: "Patch one plugin config path and hot-reload that plugin. Use this only for small targeted edits. For normal plugin configuration work, read the full config with get_plugin_config_file, modify it, then save it with replace_plugin_config_file.",
       category: "configs",
       minMode: "minimize",
       risk: "safe-write",
-      aliases: ["update-plugin-config"],
+      aliases: ["update-plugin-config", "patch-plugin-config"],
     },
     {
       plugin_name: z.string().min(1),
@@ -357,11 +357,11 @@ export function registerPluginTools(registrar: ToolRegistrar) {
     registrar,
     {
       name: "get_plugin_config_file",
-      summary: "Get the full editable plugin config object. This is the main tool to read a plugin config before replacing it.",
+      summary: "Get the full editable plugin config object. This is the main read step for plugin configuration. After editing the returned config object, save it with replace_plugin_config_file, which will auto-reload the plugin.",
       category: "plugins",
       minMode: "readonly",
       risk: "read",
-      aliases: ["plugin-config-file", "plugin-config-full"],
+      aliases: ["plugin-config-file", "plugin-config-full", "read-plugin-config", "get-plugin-config"],
     },
     {
       plugin_name: z.string().min(1),
@@ -384,11 +384,11 @@ export function registerPluginTools(registrar: ToolRegistrar) {
     registrar,
     {
       name: "replace_plugin_config_file",
-      summary: "Replace the full plugin config object and reload the plugin.",
+      summary: "Replace the full plugin config object and auto-reload the plugin. Normal plugin config workflow: call get_plugin_config_file, edit the returned config object, then call this tool with the full updated config.",
       category: "plugins",
       minMode: "full",
       risk: "safe-write",
-      aliases: ["plugin-config-replace", "save-plugin-config-file"],
+      aliases: ["plugin-config-replace", "save-plugin-config-file", "save-plugin-config", "update-plugin-config-file", "configure-plugin"],
     },
     {
       plugin_name: z.string().min(1),
@@ -412,7 +412,7 @@ export function registerPluginTools(registrar: ToolRegistrar) {
     registrar,
     {
       name: "list_plugins",
-      summary: "List plugins in a compact LLM-friendly shape. Use get_plugin_details for one plugin, then get_plugin_config_file to edit its config.",
+      summary: "List plugins in a compact LLM-friendly shape. If configurable=true, use get_plugin_config_file to read the editable config and replace_plugin_config_file to save it with auto-reload.",
       category: "plugins",
       minMode: "readonly",
       risk: "read",
@@ -426,7 +426,7 @@ export function registerPluginTools(registrar: ToolRegistrar) {
     registrar,
     {
       name: "get_plugin_details",
-      summary: "Get one plugin's compact metadata and command list. Config is intentionally separated; use get_plugin_config_file for the editable config object.",
+      summary: "Get one plugin's compact metadata and command list. Config is intentionally separated. For plugin configuration, call get_plugin_config_file to read the full editable config, then replace_plugin_config_file to save and auto-reload.",
       category: "plugins",
       minMode: "readonly",
       risk: "read",

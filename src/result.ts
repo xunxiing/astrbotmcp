@@ -53,11 +53,11 @@ export function toolResult(value: unknown) {
   }
   return {
     content: [
+      ...(value.extraContent ?? []),
       {
         type: "text" as const,
         text: toJsonText(value.value),
       },
-      ...(value.extraContent ?? []),
     ],
   };
 }

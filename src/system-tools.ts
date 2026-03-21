@@ -1,6 +1,6 @@
 import * as z from "zod/v4";
 
-import { filterLogsByNeedles } from "./logs.js";
+import { extractLogEntries, filterLogsByContains, filterLogsByNeedles } from "./logs.js";
 import { ToolRegistrar, compactOrRawLogs, encodeSegment, withToolErrorBoundary } from "./tooling.js";
 import { redactSensitiveData } from "./utils.js";
 
@@ -56,17 +56,23 @@ export function registerSystemTools(registrar: ToolRegistrar) {
     {
       wait_seconds: z.number().int().min(0).max(120).default(0),
       max_entries: z.number().int().min(1).max(1000).default(200),
+      contains: z.string().optional().describe("Optional substring filter applied after log retrieval. Use this to narrow noisy history to one plugin, command, trace id, or payload fragment."),
     },
-    async ({ wait_seconds, max_entries }) => {
+    async ({ wait_seconds, max_entries, contains }) => {
       const endpoint = runtime.config.logView === "compact" ? "/logs/compact" : "/logs/history";
-      const payload = (await runtime.gateway.request("GET", endpoint, {
+      const payload = await runtime.gateway.request("GET", endpoint, {
         query: { wait_seconds, limit: max_entries },
-      })) as Record<string, unknown>;
-      const rawLogs = Array.isArray(payload.logs) ? payload.logs : [];
+      });
+      const rawLogs = filterLogsByContains(extractLogEntries(payload), contains);
       return {
-        mode: payload.mode ?? (wait_seconds > 0 ? "watch" : "history"),
+        mode:
+          (payload && typeof payload === "object" && !Array.isArray(payload)
+            ? (payload as Record<string, unknown>).mode
+            : null) ?? (wait_seconds > 0 ? "watch" : "history"),
         log_view: runtime.config.logView,
         noise_filtering: runtime.config.enableLogNoiseFiltering,
+        contains: contains?.trim() || null,
+        count: rawLogs.length,
         logs: compactOrRawLogs(runtime, rawLogs, max_entries),
       };
     },
@@ -104,21 +110,13 @@ export function registerSystemTools(registrar: ToolRegistrar) {
             query: { wait_seconds, limit: max_entries },
           },
         )) as Record<string, unknown>;
-        rawLogs = Array.isArray(payload.logs)
-          ? payload.logs
-          : Array.isArray(payload.history)
-            ? payload.history
-            : [];
+        rawLogs = extractLogEntries(payload);
       } else {
         const contains = session_id ?? message_id;
-        const historyPayload = (await runtime.gateway.request("GET", "/logs/history", {
+        const historyPayload = await runtime.gateway.request("GET", "/logs/history", {
           query: { wait_seconds, limit: max_entries, contains },
-        })) as Record<string, unknown>;
-        const history = Array.isArray(historyPayload.logs)
-          ? historyPayload.logs
-          : Array.isArray(historyPayload.history)
-            ? historyPayload.history
-            : [];
+        });
+        const history = extractLogEntries(historyPayload);
         rawLogs = filterLogsByNeedles(history, {
           sessionId: session_id,
           messageId: message_id,

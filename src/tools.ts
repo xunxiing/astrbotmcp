@@ -1,5 +1,8 @@
 ﻿import * as z from "zod/v4";
 import { existsSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { registerDiscoveryTools } from "./discovery-tools.js";
@@ -119,6 +122,7 @@ function compactInternalToolMessagePart(part: unknown) {
           : null,
     download_url:
       typeof record.download_url === "string" ? record.download_url : null,
+    local_path: typeof record.local_path === "string" ? record.local_path : null,
   });
 }
 
@@ -129,27 +133,108 @@ function compactInternalToolMessageParts(parts: unknown) {
     .filter((item) => item !== null && item !== undefined);
 }
 
-function buildInternalToolImageContents(parts: unknown) {
-  const items = Array.isArray(parts) ? parts : [];
-  return items
-    .map((item) => asRecord(item))
-    .filter((item) => item?.type === "image")
-    .map((item) => {
-      const data = typeof item?.base64 === "string" ? item.base64.trim() : "";
-      const mimeType =
-        typeof item?.mime_type === "string" && item.mime_type.trim()
-          ? item.mime_type.trim()
-          : "image/jpeg";
-      if (!data) {
-        return null;
+function resolveInternalToolAttachmentPath(part: Record<string, unknown>) {
+  const candidates = [part.download_path, part.download_url, part.url];
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string" || !candidate.trim()) {
+      continue;
+    }
+    try {
+      const url = new URL(candidate, "http://127.0.0.1");
+      if (url.pathname.startsWith("/attachments/") || url.pathname.startsWith("/api/file/")) {
+        return `${url.pathname}${url.search}`;
       }
-      return {
+    } catch {
+      if (candidate.startsWith("/")) {
+        return candidate;
+      }
+    }
+  }
+  return null;
+}
+
+async function materializeInternalToolAttachment(
+  runtime: Runtime,
+  part: Record<string, unknown>,
+) {
+  const attachmentId =
+    typeof part.attachment_id === "string" && part.attachment_id.trim()
+      ? part.attachment_id.trim()
+      : "attachment";
+  const filename =
+    typeof part.filename === "string" && part.filename.trim()
+      ? part.filename.trim()
+      : `${attachmentId}.bin`;
+  const tempDir = join(tmpdir(), "astrbot-mcp", "attachments");
+  await mkdir(tempDir, { recursive: true });
+
+  const safeName = filename.replace(/[\\/:*?"<>|]/g, "_");
+  const localPath = join(tempDir, `${attachmentId}-${safeName}`);
+  const inlineBase64 = typeof part.base64 === "string" ? part.base64.trim() : "";
+  let buffer: Buffer;
+  if (inlineBase64) {
+    buffer = Buffer.from(inlineBase64, "base64");
+  } else {
+    const attachmentPath = resolveInternalToolAttachmentPath(part);
+    if (!attachmentPath) {
+      return null;
+    }
+    buffer = await runtime.gateway.download(attachmentPath);
+  }
+  await writeFile(localPath, buffer);
+
+  return {
+    buffer,
+    localPath,
+  };
+}
+
+async function buildInternalToolImageArtifacts(runtime: Runtime, parts: unknown) {
+  const items = Array.isArray(parts) ? parts : [];
+  const artifacts: Array<{
+    attachmentId: string | null;
+    localPath: string | null;
+    content: { type: "image"; data: string; mimeType: string };
+  }> = [];
+  for (const item of items) {
+    const record = asRecord(item);
+    if (!record || record.type !== "image") {
+      continue;
+    }
+    let data = typeof record.base64 === "string" ? record.base64.trim() : "";
+    let localPath: string | null = null;
+    try {
+      const downloaded = await materializeInternalToolAttachment(runtime, record);
+      if (downloaded) {
+        localPath = downloaded.localPath;
+        if (!data) {
+          data = downloaded.buffer.toString("base64");
+        }
+      }
+    } catch {
+      if (!data) {
+        continue;
+      }
+    }
+    if (!data) {
+      continue;
+    }
+    const mimeType =
+      typeof record.mime_type === "string" && record.mime_type.trim()
+        ? record.mime_type.trim()
+        : "image/jpeg";
+    artifacts.push({
+      attachmentId:
+        typeof record.attachment_id === "string" ? record.attachment_id : null,
+      localPath,
+      content: {
         type: "image",
         data,
         mimeType,
-      };
-    })
-    .filter((item): item is { type: "image"; data: string; mimeType: string } => Boolean(item));
+      },
+    });
+  }
+  return artifacts;
 }
 
 export function compactInternalTool(
@@ -378,7 +463,7 @@ export function compactInternalToolInvocation(
   });
 }
 
-function buildInternalToolRichResult(
+async function buildInternalToolRichResult(
   runtime: Runtime,
   payload: unknown,
   compacted: unknown,
@@ -407,18 +492,39 @@ function buildInternalToolRichResult(
             ? compactedRecord.message_parts
             : [];
 
+  const imageArtifacts = options.includeImageContent
+    ? await buildInternalToolImageArtifacts(runtime, rawMessageParts)
+    : [];
+  if (Array.isArray(rawMessageParts) && imageArtifacts.length > 0) {
+    for (const part of rawMessageParts) {
+      const record = asRecord(part);
+      if (!record) {
+        continue;
+      }
+      const attachmentId =
+        typeof record.attachment_id === "string" ? record.attachment_id : null;
+      const matched = imageArtifacts.find((item) => item.attachmentId === attachmentId);
+      if (matched?.localPath) {
+        record.local_path = matched.localPath;
+      }
+    }
+  }
+
   const finalValue = asRecord(compacted)
     ? compactObject({
         ...compactedRecord,
         logs: options.includeLogs && compactLogs.length > 0 ? compactLogs : null,
+        message_parts:
+          Array.isArray(rawMessageParts) && rawMessageParts.length > 0
+            ? compactInternalToolMessageParts(rawMessageParts)
+            : compactedRecord?.message_parts,
       })
     : compacted;
 
-  const extraContent = options.includeImageContent
-    ? buildInternalToolImageContents(rawMessageParts)
-    : [];
-
-  return richResult(finalValue, extraContent);
+  return richResult(
+    finalValue,
+    imageArtifacts.map((item) => item.content),
+  );
 }
 
 async function waitForInternalToolTask(
@@ -871,7 +977,7 @@ export function registerTools(server: McpServer, runtime: Runtime): ToolCatalogE
         includeArguments: show_arguments,
         includeDebug: show_debug,
       });
-      return buildInternalToolRichResult(runtime, finalPayload, compacted, {
+      return await buildInternalToolRichResult(runtime, finalPayload, compacted, {
         includeImageContent: include_image_content,
         includeLogs: include_logs,
         logLimit: log_limit,
@@ -916,7 +1022,7 @@ export function registerTools(server: McpServer, runtime: Runtime): ToolCatalogE
           includeDebug: show_debug,
         },
       );
-      return buildInternalToolRichResult(runtime, payload, compacted, {
+      return await buildInternalToolRichResult(runtime, payload, compacted, {
         includeImageContent: include_image_content,
         includeLogs: include_logs,
         logLimit: log_limit,
@@ -987,7 +1093,7 @@ export function registerTools(server: McpServer, runtime: Runtime): ToolCatalogE
           }))
           .filter((event) => event !== null && event !== undefined),
       });
-      return buildInternalToolRichResult(
+      return await buildInternalToolRichResult(
         runtime,
         compactObject({
           ...(asRecord(snapshot) ?? {}),

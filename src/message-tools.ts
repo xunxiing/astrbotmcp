@@ -1,5 +1,6 @@
 import * as z from "zod/v4";
 
+import { extractLogEntries } from "./logs.js";
 import { Runtime, ToolRegistrar, compactOrRawLogs, encodeSegment, withToolErrorBoundary } from "./tooling.js";
 
 const messagePartSchema = z.record(z.string(), z.unknown());
@@ -11,20 +12,6 @@ const llmConfigSchema = z
     enable_streaming: z.boolean().optional(),
   })
   .optional();
-
-function extractLogs(payload: unknown): unknown[] {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return [];
-  }
-  const record = payload as Record<string, unknown>;
-  if (Array.isArray(record.logs)) {
-    return record.logs;
-  }
-  if (Array.isArray(record.history)) {
-    return record.history;
-  }
-  return [];
-}
 
 function logFingerprint(logs: unknown[]): string {
   const last = logs.at(-1);
@@ -918,7 +905,7 @@ async function fetchEventLogs(
       limit: maxEntries,
     },
   });
-  return extractLogs(payload);
+  return extractLogEntries(payload);
 }
 
 function extractReplyFromSessionLogs(logs: unknown[], options: {
@@ -1065,7 +1052,7 @@ export async function waitForReplyLogs(
         contains: sessionNeedle,
       },
     });
-    return extractLogs(payload);
+    return extractLogEntries(payload);
   };
   const fetchGlobalLogs = async (waitSeconds: number) => {
     const payload = await runtime.gateway.request("GET", "/logs/history", {
@@ -1074,7 +1061,7 @@ export async function waitForReplyLogs(
         limit: options.maxEntries,
       },
     });
-    return extractLogs(payload);
+    return extractLogEntries(payload);
   };
 
   if (options.waitSeconds <= 0) {
@@ -1139,6 +1126,63 @@ export async function waitForReplyLogs(
     logs,
     checks,
     reason: "timeout",
+  };
+}
+
+function createTraceId() {
+  return `trigger-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function buildTriggerStatus(args: {
+  traceId: string;
+  accepted: boolean;
+  eventId: string | null;
+  injection: Record<string, unknown>;
+  watch: EventWatchResult;
+  replyLookup: { reply: unknown | null; checks: number; reason: string };
+  platformReplyLookup: { reply: unknown | null; checks: number; reason: string };
+  logReplyLookup: { reply: unknown | null; checks: number; reason: string };
+  finalReplySource: "history" | "platform" | "logs" | null;
+}) {
+  return {
+    trace_id: args.traceId,
+    injection: {
+      accepted: args.accepted,
+      event_id: args.eventId,
+      platform_id: args.injection.platform_id ?? null,
+      message_type: args.injection.message_type ?? null,
+      unified_msg_origin: args.injection.unified_msg_origin ?? null,
+      conversation_id:
+        args.injection.conversation_id ?? args.injection.display_conversation_id ?? null,
+      session_id: args.injection.session_id ?? null,
+      group_id: args.injection.group_id ?? null,
+    },
+    processing: {
+      observed_event_logs: args.watch.rawLogs.length > 0,
+      settled: args.watch.settled,
+      reason: args.watch.reason,
+      waited_seconds: args.watch.waitedSeconds,
+      checks: args.watch.checks,
+    },
+    reply_capture: {
+      found: Boolean(args.finalReplySource),
+      source: args.finalReplySource,
+      history: {
+        found: Boolean(args.replyLookup.reply),
+        checks: args.replyLookup.checks,
+        reason: args.replyLookup.reason,
+      },
+      platform: {
+        found: Boolean(args.platformReplyLookup.reply),
+        checks: args.platformReplyLookup.checks,
+        reason: args.platformReplyLookup.reason,
+      },
+      logs: {
+        found: Boolean(args.logReplyLookup.reply),
+        checks: args.logReplyLookup.checks,
+        reason: args.logReplyLookup.reason,
+      },
+    },
   };
 }
 
@@ -1232,7 +1276,7 @@ export function registerMessageTools(registrar: ToolRegistrar) {
     {
       name: "trigger_message_reply",
       summary:
-        `Inject an inbound message into AstrBot, wait for reply processing to settle, and return the captured reply.${wakePrefixHint}${sessionHint}`,
+        `Inject an inbound message into AstrBot, wait for reply processing to settle, and return the captured reply together with staged status.${wakePrefixHint}${sessionHint}`,
       category: "messages",
       minMode: "minimize",
       risk: "safe-write",
@@ -1289,6 +1333,7 @@ export function registerMessageTools(registrar: ToolRegistrar) {
       const resolvedPollIntervalSeconds = poll_interval_seconds ?? 1;
       const resolvedMaxEntries = max_entries ?? 200;
       const requestStartedAt = Date.now();
+      const traceId = createTraceId();
       const inputText = message ?? extractPlainTextFromParts(message_chain);
 
       if (!message && (!message_chain || message_chain.length === 0)) {
@@ -1332,12 +1377,33 @@ export function registerMessageTools(registrar: ToolRegistrar) {
       const eventId = String(injection.message_id ?? "");
       if (!eventId) {
         const result: Record<string, unknown> = {
+          trace_id: traceId,
+          event_id: null,
           reply_found: false,
           reply: null,
+          reply_source: null,
         };
         if (resolvedIncludeLogs) {
           result.logs = [];
         }
+        result.status = buildTriggerStatus({
+          traceId,
+          accepted: false,
+          eventId: null,
+          injection,
+          watch: {
+            rawLogs: [],
+            logs: [],
+            waitedSeconds: 0,
+            settled: false,
+            reason: "disabled",
+            checks: 0,
+          },
+          replyLookup: { reply: null, checks: 0, reason: "disabled" },
+          platformReplyLookup: { reply: null, checks: 0, reason: "disabled" },
+          logReplyLookup: { reply: null, checks: 0, reason: "disabled" },
+          finalReplySource: null,
+        });
         if (resolvedIncludeDebug) {
           result.debug = {
             injection,
@@ -1432,7 +1498,12 @@ export function registerMessageTools(registrar: ToolRegistrar) {
       const finalReplySource =
         replyLookup.reply ? "history" : platformReplyLookup.reply ? "platform" : logReplyLookup.reply ? "logs" : null;
 
-      const result: Record<string, unknown> = {};
+      const result: Record<string, unknown> = {
+        trace_id: traceId,
+        event_id: eventId,
+        reply_found: Boolean(finalReply),
+        reply_source: finalReplySource,
+      };
       if (finalReply) {
         result.reply = finalReply.text;
         if (finalReply.reasoning) {
@@ -1441,12 +1512,18 @@ export function registerMessageTools(registrar: ToolRegistrar) {
       } else {
         result.reply_found = false;
         result.reply = null;
-        result.status = {
-          waited_seconds: watch.waitedSeconds,
-          settled: watch.settled,
-          reason: watch.reason,
-        };
       }
+      result.status = buildTriggerStatus({
+        traceId,
+        accepted: true,
+        eventId,
+        injection,
+        watch,
+        replyLookup,
+        platformReplyLookup,
+        logReplyLookup,
+        finalReplySource,
+      });
 
       if (resolvedIncludeLogs && finalReplySource === "logs" && logReplyLookup.logs.length > 0) {
         result.logs = compactMessageToolLogs(

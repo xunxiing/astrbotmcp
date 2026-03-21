@@ -141,6 +141,33 @@ async function requestJson(
   }
 }
 
+async function requestBuffer(
+  url: URL,
+  init: RequestInit,
+  timeout: number,
+): Promise<Buffer> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  try {
+    const response = await fetch(url, { ...init, signal: controller.signal });
+    if (!response.ok) {
+      const payload = await parseJson(response);
+      const message =
+        typeof payload === "object" && payload && "error" in payload
+          ? String(
+              ((payload as Record<string, unknown>).error as Record<string, unknown>)
+                ?.message ?? response.statusText,
+            )
+          : response.statusText;
+      throw new ApiError(message, response.status, payload);
+    }
+    const arrayBuffer = await response.arrayBuffer();
+    return Buffer.from(arrayBuffer);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export class GatewayClient {
   constructor(private readonly config: AppConfig) {}
 
@@ -248,6 +275,28 @@ export class GatewayClient {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  async download(
+    path: string,
+    options: {
+      query?: Record<string, QueryValue>;
+      headers?: Record<string, string>;
+      timeoutMs?: number;
+    } = {},
+  ): Promise<Buffer> {
+    const url = buildUrl(this.config.gatewayUrl, path, options.query);
+    return requestBuffer(
+      url,
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${this.config.gatewayToken}`,
+          ...(options.headers ?? {}),
+        },
+      },
+      options.timeoutMs ?? this.config.gatewayTimeout,
+    );
   }
 
   async uploadFile(
